@@ -243,7 +243,6 @@ def build_ui():
 
                 chatbot = gr.Chatbot(
                     elem_id="chatbox",
-                    bubble_full_width=False,
                     show_label=False,
                     avatar_images=(None, "🎩"),
                 )
