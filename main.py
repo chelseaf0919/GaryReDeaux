@@ -231,7 +231,6 @@ def build_ui():
                     elem_id="chatbox",
                     show_label=False,
                     avatar_images=(None, "🎩"),
-                    type="messages",
                 )
 
                 audio_out = gr.Audio(
