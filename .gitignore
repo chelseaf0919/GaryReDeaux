@@ -1,0 +1,25 @@
+# Environment
+.env
+
+# Gary's memory (rebuild locally with ingest.py)
+gary_memory.db
+gary_chroma/
+
+# Chat exports (too large + personal)
+*.html
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+env/
+venv/
+.venv/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
