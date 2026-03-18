@@ -12,13 +12,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 import gradio as gr
 
-# Load .env file if present (local dev)
 load_dotenv()
 
 from gary_core import GaryCore
 from gary_voice import speak
-
-# ── THREAD STORAGE ────────────────────────────────────────────────────────────
 
 DB_PATH = "gary_memory.db"
 
@@ -103,8 +100,6 @@ def update_thread_title(thread_id, title):
     conn.close()
 
 
-# ── CHAT LOGIC ────────────────────────────────────────────────────────────────
-
 gary = GaryCore()
 current_thread_id = None
 
@@ -122,13 +117,8 @@ def load_existing_thread(thread_id):
     messages = load_thread_messages(thread_id)
     gary.reset()
     gary.conversation_history = messages
-
-    history = []
-    for i, msg in enumerate(messages):
-        if msg["role"] == "user":
-            gary_msg = messages[i + 1]["content"] if i + 1 < len(messages) else None
-            history.append((msg["content"], gary_msg))
-
+    # Return messages in new format
+    history = [{"role": m["role"], "content": m["content"]} for m in messages]
     return history, thread_id
 
 
@@ -168,17 +158,15 @@ def send_message(user_message, history, thread_id, voice_enabled):
     save_message(thread_id, "assistant", gary_response)
 
     history = history or []
-    history.append((user_message, gary_response))
+    history.append({"role": "user", "content": user_message})
+    history.append({"role": "assistant", "content": gary_response})
 
-    # Handle voice
     audio_path = None
     if voice_enabled:
         audio_path = speak(gary_response)
 
     return history, "", thread_id, audio_path
 
-
-# ── UI ────────────────────────────────────────────────────────────────────────
 
 def build_ui():
     init_threads_table()
@@ -202,7 +190,6 @@ def build_ui():
         thread_state = gr.State(None)
 
         with gr.Row():
-            # ── Sidebar ──────────────────────────────────────────────────────
             with gr.Column(scale=1, min_width=220):
                 gr.HTML("""
                     <div style="padding: 1rem 0 0.5rem 0;">
@@ -228,7 +215,6 @@ def build_ui():
                     interactive=True,
                 )
 
-            # ── Main chat ─────────────────────────────────────────────────────
             with gr.Column(scale=4):
                 gr.HTML("""
                     <div style="text-align:center; padding: 1.5rem 0 0.5rem 0;">
@@ -245,9 +231,9 @@ def build_ui():
                     elem_id="chatbox",
                     show_label=False,
                     avatar_images=(None, "🎩"),
+                    type="messages",
                 )
 
-                # Audio output — hidden when voice is off
                 audio_out = gr.Audio(
                     label="Gary's Voice",
                     autoplay=True,
@@ -264,8 +250,6 @@ def build_ui():
                         autofocus=True,
                     )
                     send_btn = gr.Button("Send", variant="primary", elem_id="send-btn", scale=1)
-
-        # ── Events ───────────────────────────────────────────────────────────
 
         def on_send(message, history, thread_id, voice_enabled):
             history, cleared, thread_id, audio = send_message(message, history, thread_id, voice_enabled)
@@ -319,22 +303,15 @@ def build_ui():
     return demo
 
 
-# ── LAUNCH ────────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     print("\n🇬🇧 Gary RéDeaux — Starting up...\n")
 
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("⚠  WARNING: ANTHROPIC_API_KEY not set.")
-        print("   Add it to your .env file or Railway Variables.\n")
-
+        print("⚠  WARNING: ANTHROPIC_API_KEY not set.\n")
     if not os.environ.get("ELEVENLABS_API_KEY"):
-        print("⚠  WARNING: ELEVENLABS_API_KEY not set — voice disabled.")
-        print("   Add it to your .env file or Railway Variables.\n")
-
+        print("⚠  WARNING: ELEVENLABS_API_KEY not set — voice disabled.\n")
     if not Path(DB_PATH).exists():
-        print("⚠  WARNING: gary_memory.db not found.")
-        print("   Run ingest.py first to load Gary's memories.\n")
+        print("⚠  WARNING: gary_memory.db not found. Run ingest.py first.\n")
 
     app = build_ui()
     app.launch(
