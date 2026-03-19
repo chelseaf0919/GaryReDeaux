@@ -409,6 +409,8 @@ HTML = """<!DOCTYPE html>
   function autoResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px'; }
 
   // Voice Input
+  let silenceTimer = null;
+
   function toggleMic() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -417,29 +419,43 @@ HTML = """<!DOCTYPE html>
     }
 
     if (isListening) {
+      clearTimeout(silenceTimer);
       recognition.stop();
       return;
     }
 
     recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
 
     recognition.onstart = () => {
       isListening = true;
       document.getElementById('micBtn').classList.add('listening');
       document.getElementById('micBtn').textContent = '🔴';
-      document.getElementById('msgInput').placeholder = 'Listening...';
+      document.getElementById('msgInput').placeholder = 'Listening... tap 🔴 to stop';
     };
 
     recognition.onresult = (event) => {
-      const transcript = Array.from(event.results).map(r => r[0].transcript).join('');
+      let interim = '';
+      let final = '';
+      for (let i = 0; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          final += event.results[i][0].transcript;
+        } else {
+          interim += event.results[i][0].transcript;
+        }
+      }
+      const transcript = final + interim;
       document.getElementById('msgInput').value = transcript;
       autoResize(document.getElementById('msgInput'));
-      if (event.results[event.results.length - 1].isFinal) {
-        recognition.stop();
-        setTimeout(() => sendMessage(), 300);
+
+      clearTimeout(silenceTimer);
+      if (final) {
+        silenceTimer = setTimeout(() => {
+          recognition.stop();
+          setTimeout(() => sendMessage(), 200);
+        }, 1500);
       }
     };
 
@@ -451,7 +467,8 @@ HTML = """<!DOCTYPE html>
     };
 
     recognition.onerror = (e) => {
-      console.error('Speech error:', e);
+      if (e.error !== 'aborted') console.error('Speech error:', e);
+      clearTimeout(silenceTimer);
       recognition.stop();
     };
 
