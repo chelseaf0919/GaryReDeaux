@@ -1,5 +1,4 @@
 anthropic
-gradio==5.23.0
 python-dotenv
 elevenlabs
 supabase
