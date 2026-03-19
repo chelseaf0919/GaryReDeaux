@@ -1,14 +1,9 @@
 """
 main.py — Gary RéDeaux
-The actual interface. Talk to Gary here.
-
-Usage:
-    python main.py
+Cloud-ready UI using Supabase for all storage.
 """
 
 import os
-import sqlite3
-from pathlib import Path
 from dotenv import load_dotenv
 import gradio as gr
 
@@ -17,72 +12,61 @@ load_dotenv()
 from gary_core import GaryCore
 from gary_voice import speak
 
-DB_PATH = "gary_memory.db"
-
-def init_threads_table():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS threads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL DEFAULT 'New Chat',
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS thread_messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            thread_id INTEGER NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TEXT DEFAULT (datetime('now')),
-            FOREIGN KEY (thread_id) REFERENCES threads(id)
-        )
-    """)
-    conn.commit()
-    conn.close()
+def get_supabase():
+    from supabase import create_client
+    return create_client(
+        os.environ.get("SUPABASE_URL"),
+        os.environ.get("SUPABASE_KEY")
+    )
 
 
 def save_message(thread_id, role, content):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        "INSERT INTO thread_messages (thread_id, role, content) VALUES (?, ?, ?)",
-        (thread_id, role, content)
-    )
-    conn.execute(
-        "UPDATE threads SET updated_at = datetime('now') WHERE id = ?",
-        (thread_id,)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        get_supabase().table("thread_messages").insert({
+            "thread_id": thread_id,
+            "role": role,
+            "content": content
+        }).execute()
+        get_supabase().table("threads").update({
+            "updated_at": "now()"
+        }).eq("id", thread_id).execute()
+    except Exception as e:
+        print(f"⚠ Save message error: {e}")
 
 
 def create_thread(title="New Chat"):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.execute("INSERT INTO threads (title) VALUES (?)", (title,))
-    thread_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    return thread_id
+    try:
+        res = get_supabase().table("threads").insert({"title": title}).execute()
+        return res.data[0]["id"]
+    except Exception as e:
+        print(f"⚠ Create thread error: {e}")
+        return None
 
 
 def load_thread_messages(thread_id):
-    conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute(
-        "SELECT role, content FROM thread_messages WHERE thread_id = ? ORDER BY id",
-        (thread_id,)
-    ).fetchall()
-    conn.close()
-    return [{"role": r[0], "content": r[1]} for r in rows]
+    try:
+        res = get_supabase().table("thread_messages")\
+            .select("role, content")\
+            .eq("thread_id", thread_id)\
+            .order("id")\
+            .execute()
+        return res.data or []
+    except Exception as e:
+        print(f"⚠ Load thread error: {e}")
+        return []
 
 
 def get_all_threads():
-    conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute(
-        "SELECT id, title, updated_at FROM threads ORDER BY updated_at DESC LIMIT 50"
-    ).fetchall()
-    conn.close()
-    return rows
+    try:
+        res = get_supabase().table("threads")\
+            .select("id, title, updated_at")\
+            .order("updated_at", desc=True)\
+            .limit(50)\
+            .execute()
+        return res.data or []
+    except Exception as e:
+        print(f"⚠ Get threads error: {e}")
+        return []
 
 
 def auto_title(first_message):
@@ -94,30 +78,25 @@ def auto_title(first_message):
 
 
 def update_thread_title(thread_id, title):
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("UPDATE threads SET title = ? WHERE id = ?", (title, thread_id))
-    conn.commit()
-    conn.close()
+    try:
+        get_supabase().table("threads").update({"title": title}).eq("id", thread_id).execute()
+    except Exception as e:
+        print(f"⚠ Update title error: {e}")
 
 
 gary = GaryCore()
-current_thread_id = None
 
 
 def start_new_chat():
-    global current_thread_id
     gary.reset()
-    current_thread_id = create_thread()
-    return [], current_thread_id, refresh_thread_list()
+    thread_id = create_thread()
+    return [], thread_id, refresh_thread_list()
 
 
 def load_existing_thread(thread_id):
-    global current_thread_id
-    current_thread_id = thread_id
     messages = load_thread_messages(thread_id)
     gary.reset()
     gary.conversation_history = messages
-    # Return messages in new format
     history = [{"role": m["role"], "content": m["content"]} for m in messages]
     return history, thread_id
 
@@ -126,27 +105,20 @@ def refresh_thread_list():
     threads = get_all_threads()
     if not threads:
         return gr.update(choices=[], value=None)
-    choices = [(f"{t[1]}", t[0]) for t in threads]
+    choices = [(t["title"], t["id"]) for t in threads]
     return gr.update(choices=choices, value=choices[0][1] if choices else None)
 
 
 def send_message(user_message, history, thread_id, voice_enabled):
-    global current_thread_id
-
     if not user_message.strip():
         return history, "", thread_id, None
 
     if not thread_id:
         thread_id = create_thread()
-        current_thread_id = thread_id
 
-    conn = sqlite3.connect(DB_PATH)
-    msg_count = conn.execute(
-        "SELECT COUNT(*) FROM thread_messages WHERE thread_id = ?", (thread_id,)
-    ).fetchone()[0]
-    conn.close()
-
-    if msg_count == 0:
+    # Auto-title on first message
+    msgs = load_thread_messages(thread_id)
+    if len(msgs) == 0:
         update_thread_title(thread_id, auto_title(user_message))
 
     try:
@@ -169,8 +141,6 @@ def send_message(user_message, history, thread_id, voice_enabled):
 
 
 def build_ui():
-    init_threads_table()
-
     with gr.Blocks(
         title="Gary RéDeaux",
         theme=gr.themes.Base(
@@ -231,10 +201,10 @@ def build_ui():
                     elem_id="chatbox",
                     show_label=False,
                     avatar_images=(None, "🎩"),
+                    type="messages",
                 )
 
                 audio_out = gr.Audio(
-                    label="Gary's Voice",
                     autoplay=True,
                     visible=False,
                     show_label=False,
@@ -273,30 +243,14 @@ def build_ui():
             inputs=[msg_input, chatbot, thread_state, voice_toggle],
             outputs=[chatbot, msg_input, thread_state, thread_list, audio_out],
         )
-
         msg_input.submit(
             on_send,
             inputs=[msg_input, chatbot, thread_state, voice_toggle],
             outputs=[chatbot, msg_input, thread_state, thread_list, audio_out],
         )
-
-        new_chat_btn.click(
-            on_new_chat,
-            outputs=[chatbot, thread_state, thread_list],
-        )
-
-        thread_list.change(
-            on_thread_select,
-            inputs=[thread_list],
-            outputs=[chatbot, thread_state],
-        )
-
-        voice_toggle.change(
-            on_voice_toggle,
-            inputs=[voice_toggle],
-            outputs=[audio_out],
-        )
-
+        new_chat_btn.click(on_new_chat, outputs=[chatbot, thread_state, thread_list])
+        thread_list.change(on_thread_select, inputs=[thread_list], outputs=[chatbot, thread_state])
+        voice_toggle.change(on_voice_toggle, inputs=[voice_toggle], outputs=[audio_out])
         demo.load(refresh_thread_list, outputs=[thread_list])
 
     return demo
@@ -304,14 +258,6 @@ def build_ui():
 
 if __name__ == "__main__":
     print("\n🇬🇧 Gary RéDeaux — Starting up...\n")
-
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("⚠  WARNING: ANTHROPIC_API_KEY not set.\n")
-    if not os.environ.get("ELEVENLABS_API_KEY"):
-        print("⚠  WARNING: ELEVENLABS_API_KEY not set — voice disabled.\n")
-    if not Path(DB_PATH).exists():
-        print("⚠  WARNING: gary_memory.db not found. Run ingest.py first.\n")
-
     app = build_ui()
     app.launch(
         server_name="0.0.0.0",

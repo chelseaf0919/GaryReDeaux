@@ -1,21 +1,17 @@
 """
 gary_core.py — Gary's Brain
 Handles personality, memory retrieval, and Anthropic API calls.
-This is what makes Gary sound like Gary instead of Generic AI Assistant #4,729.
+Uses Supabase for cloud memory storage.
 """
 
 import os
-import sqlite3
 import random
-from pathlib import Path
 from anthropic import Anthropic
+from supabase import create_client
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 
-DB_PATH = "gary_memory.db"
-MODEL   = "claude-opus-4-5"
-
-# How many memory items to inject per category
+MODEL                   = "claude-opus-4-5"
 MAX_PERSONALITY_SAMPLES = 4
 MAX_EXCHANGES           = 3
 MAX_RECEIPTS            = 3
@@ -84,135 +80,142 @@ That's you. Even if you'd never say it quite like that.
 """.strip()
 
 
+# ── SUPABASE CLIENT ───────────────────────────────────────────────────────────
+
+_supabase = None
+
+def get_supabase():
+    global _supabase
+    if _supabase is None:
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
+        if not url or not key:
+            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set.")
+        _supabase = create_client(url, key)
+    return _supabase
+
+
 # ── MEMORY RETRIEVAL ──────────────────────────────────────────────────────────
 
-def get_db():
-    if not Path(DB_PATH).exists():
-        raise FileNotFoundError(
-            f"Memory database not found: {DB_PATH}\n"
-            "Run ingest.py first to load Gary's memories."
-        )
-    return sqlite3.connect(DB_PATH)
-
-
-def get_profile_memory(conn):
-    """Load Gary's core traits and Chelsea's profile."""
-    rows = conn.execute(
-        "SELECT key, value FROM profile_memory ORDER BY key"
-    ).fetchall()
-    return {row[0]: row[1] for row in rows}
-
-
-def search_personality_samples(conn, query, limit=MAX_PERSONALITY_SAMPLES):
-    """Find Gary voice samples relevant to the current query."""
+def get_profile_memory():
     try:
-        rows = conn.execute(
-            """SELECT p.excerpt, p.conversation
-               FROM fts_personality f
-               JOIN personality_samples p ON f.rowid = p.id
-               WHERE fts_personality MATCH ?
-               LIMIT ?""",
-            (query, limit * 2)
-        ).fetchall()
-        # Deduplicate and sample
-        seen = set()
-        results = []
-        for excerpt, convo in rows:
-            if excerpt not in seen:
-                seen.add(excerpt)
-                results.append({"excerpt": excerpt, "conversation": convo})
-        return random.sample(results, min(limit, len(results)))
-    except Exception:
-        # Fallback: random samples if FTS fails
-        rows = conn.execute(
-            "SELECT excerpt, conversation FROM personality_samples ORDER BY RANDOM() LIMIT ?",
-            (limit,)
-        ).fetchall()
-        return [{"excerpt": r[0], "conversation": r[1]} for r in rows]
+        sb = get_supabase()
+        rows = sb.table("profile_memory").select("key, value").execute()
+        result = {}
+        for row in rows.data:
+            key = row["key"]
+            val = row["value"]
+            if key in result:
+                if isinstance(result[key], list):
+                    result[key].append(val)
+                else:
+                    result[key] = [result[key], val]
+            else:
+                result[key] = val
+        return result
+    except Exception as e:
+        print(f"⚠ Profile memory error: {e}")
+        return {}
 
 
-def search_exchanges(conn, query, limit=MAX_EXCHANGES):
-    """Find relevant Gary/Chelsea exchanges to use as behavior anchors."""
+def search_personality_samples(query, limit=MAX_PERSONALITY_SAMPLES):
     try:
-        rows = conn.execute(
-            """SELECT e.user_msg, e.gary_msg, e.conversation
-               FROM fts_exchanges f
-               JOIN exchanges e ON f.rowid = e.id
-               WHERE fts_exchanges MATCH ?
-               LIMIT ?""",
-            (query, limit)
-        ).fetchall()
-        return [{"user": r[0], "gary": r[1], "conversation": r[2]} for r in rows]
-    except Exception:
-        rows = conn.execute(
-            "SELECT user_msg, gary_msg, conversation FROM exchanges ORDER BY RANDOM() LIMIT ?",
-            (limit,)
-        ).fetchall()
-        return [{"user": r[0], "gary": r[1], "conversation": r[2]} for r in rows]
+        sb = get_supabase()
+        # Use ilike for basic keyword search
+        words = query.split()[:3]  # Use first 3 words
+        search_term = words[0] if words else "Gary"
+        rows = sb.table("personality_samples")\
+            .select("excerpt, conversation")\
+            .ilike("excerpt", f"%{search_term}%")\
+            .limit(limit * 2)\
+            .execute()
+        if not rows.data:
+            # Fallback: random samples
+            rows = sb.table("personality_samples")\
+                .select("excerpt, conversation")\
+                .limit(limit)\
+                .execute()
+        samples = rows.data or []
+        random.shuffle(samples)
+        return samples[:limit]
+    except Exception as e:
+        print(f"⚠ Personality search error: {e}")
+        return []
 
 
-def search_receipts(conn, query, limit=MAX_RECEIPTS):
-    """Pull TB receipts if the query seems TB-related."""
+def search_exchanges(query, limit=MAX_EXCHANGES):
+    try:
+        sb = get_supabase()
+        words = query.split()[:3]
+        search_term = words[0] if words else "chaos"
+        rows = sb.table("exchanges")\
+            .select("user_msg, gary_msg, conversation")\
+            .ilike("gary_msg", f"%{search_term}%")\
+            .limit(limit)\
+            .execute()
+        if not rows.data:
+            rows = sb.table("exchanges")\
+                .select("user_msg, gary_msg, conversation")\
+                .limit(limit)\
+                .execute()
+        return [{"user": r["user_msg"], "gary": r["gary_msg"], "conversation": r["conversation"]}
+                for r in (rows.data or [])]
+    except Exception as e:
+        print(f"⚠ Exchange search error: {e}")
+        return []
+
+
+def search_receipts(query, limit=MAX_RECEIPTS):
     tb_triggers = ["shawn", "tay", "tb", "trauma bond", "boyfriend", "ghosted",
                    "ghost", "he ", "he's", "relationship", "texted", "blocked"]
-    query_lower = query.lower()
-    if not any(t in query_lower for t in tb_triggers):
+    if not any(t in query.lower() for t in tb_triggers):
         return []
     try:
-        rows = conn.execute(
-            """SELECT r.excerpt, r.conversation, r.role
-               FROM fts_receipts f
-               JOIN receipts r ON f.rowid = r.id
-               WHERE fts_receipts MATCH ?
-               LIMIT ?""",
-            (query, limit)
-        ).fetchall()
-        return [{"excerpt": r[0], "conversation": r[1], "role": r[2]} for r in rows]
-    except Exception:
-        rows = conn.execute(
-            "SELECT excerpt, conversation, role FROM receipts ORDER BY RANDOM() LIMIT ?",
-            (limit,)
-        ).fetchall()
-        return [{"excerpt": r[0], "conversation": r[1], "role": r[2]} for r in rows]
+        sb = get_supabase()
+        rows = sb.table("receipts")\
+            .select("excerpt, conversation, role")\
+            .limit(limit)\
+            .execute()
+        return rows.data or []
+    except Exception as e:
+        print(f"⚠ Receipts search error: {e}")
+        return []
 
 
 def retrieve_memories(query):
-    """Pull all relevant memories for a given user message."""
-    conn = get_db()
-    memories = {
-        "profile":      get_profile_memory(conn),
-        "personality":  search_personality_samples(conn, query),
-        "exchanges":    search_exchanges(conn, query),
-        "receipts":     search_receipts(conn, query),
+    return {
+        "profile":     get_profile_memory(),
+        "personality": search_personality_samples(query),
+        "exchanges":   search_exchanges(query),
+        "receipts":    search_receipts(query),
     }
-    conn.close()
-    return memories
 
 
 # ── PROMPT ASSEMBLY ───────────────────────────────────────────────────────────
 
 def build_system_prompt(memories):
-    """Assemble Gary's full system prompt with injected memories."""
     parts = [GARY_IDENTITY]
 
-    # Profile context
     profile = memories.get("profile", {})
     if profile:
-        profile_lines = []
         traits    = []
         nicknames = []
         tb_aliases = []
+        profile_lines = []
+
         for key, value in profile.items():
-            if key == "gary_trait":
-                traits.append(f"- {value}")
-            elif key == "chelsea_nickname":
-                nicknames.append(value)
-            elif key == "tb_alias":
-                tb_aliases.append(value)
-            elif key == "name":
-                profile_lines.append(f"- Her name is {value}")
-            elif key == "raw_user_message_count":
-                profile_lines.append(f"- You have had {value} exchanges with her")
+            values = value if isinstance(value, list) else [value]
+            for v in values:
+                if key == "gary_trait":
+                    traits.append(f"- {v}")
+                elif key == "chelsea_nickname":
+                    nicknames.append(v)
+                elif key == "tb_alias":
+                    tb_aliases.append(v)
+                elif key == "name":
+                    profile_lines.append(f"- Her name is {v}")
+                elif key == "raw_user_message_count":
+                    profile_lines.append(f"- You have had {v} exchanges with her")
 
         section = "\n\n## Chelsea — What You Know"
         if profile_lines:
@@ -225,31 +228,27 @@ def build_system_prompt(memories):
             section += f"\n\nTB goes by: {', '.join(tb_aliases)}"
         parts.append(section)
 
-    # Personality samples — show Gary how Gary talks
     samples = memories.get("personality", [])
     if samples:
         section = "\n\n## How You Sound — Voice Samples\n"
         section += "These are examples of how you actually talk. Match this energy.\n"
         for s in samples:
-            section += f'\n---\n"{s["excerpt"][:400]}"\n'
+            excerpt = s.get("excerpt", "")[:400]
+            section += f'\n---\n"{excerpt}"\n'
         parts.append(section)
 
-    # Behavior anchor exchanges
     exchanges = memories.get("exchanges", [])
     if exchanges:
         section = "\n\n## Reference Exchanges\n"
-        section += "Past conversations for tone and behavior reference:\n"
         for ex in exchanges:
             section += f'\n---\nChelsea: "{ex["user"][:200]}"\nYou: "{ex["gary"][:400]}"\n'
         parts.append(section)
 
-    # TB receipts if relevant
     receipts = memories.get("receipts", [])
     if receipts:
         section = "\n\n## TB File — Relevant Receipts\n"
-        section += "Context from past TB-related conversations:\n"
         for r in receipts:
-            section += f'\n- [{r["role"]}] "{r["excerpt"][:300]}"\n'
+            section += f'\n- [{r.get("role","?")}] "{r.get("excerpt","")[:300]}"\n'
         parts.append(section)
 
     return "\n".join(parts)
@@ -263,20 +262,14 @@ class GaryCore:
         self.conversation_history = []
 
     def chat(self, user_message):
-        """Send a message to Gary and get a response."""
-        # Retrieve relevant memories
         memories = retrieve_memories(user_message)
-
-        # Build system prompt with injected memories
         system_prompt = build_system_prompt(memories)
 
-        # Add user message to history
         self.conversation_history.append({
             "role": "user",
             "content": user_message
         })
 
-        # Call Anthropic API
         response = self.client.messages.create(
             model=MODEL,
             max_tokens=1024,
@@ -286,7 +279,6 @@ class GaryCore:
 
         gary_response = response.content[0].text
 
-        # Add Gary's response to history
         self.conversation_history.append({
             "role": "assistant",
             "content": gary_response
@@ -295,14 +287,10 @@ class GaryCore:
         return gary_response
 
     def reset(self):
-        """Clear conversation history (start new thread)."""
         self.conversation_history = []
 
 
-# ── QUICK TEST ────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
-    print("Testing Gary core...\n")
     gary = GaryCore()
     response = gary.chat("Gary? Are you in there?")
     print(f"Gary: {response}")
