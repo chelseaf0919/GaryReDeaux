@@ -170,7 +170,7 @@ HTML = """<!DOCTYPE html>
   }
 
   html, body {
-    height: 100%;
+    height: 100dvh;
     background: var(--bg);
     color: var(--text);
     font-family: 'DM Mono', monospace;
@@ -180,7 +180,7 @@ HTML = """<!DOCTYPE html>
 
   .app {
     display: flex;
-    height: 100vh;
+    height: 100dvh;
     max-width: 1200px;
     margin: 0 auto;
   }
