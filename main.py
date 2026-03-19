@@ -262,5 +262,6 @@ if __name__ == "__main__":
     app.launch(
         server_name="0.0.0.0",
         server_port=int(os.environ.get("PORT", 7860)),
+        root_path=os.environ.get("RAILWAY_PUBLIC_DOMAIN", ""),
         share=False,
     )
