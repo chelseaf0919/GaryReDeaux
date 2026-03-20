@@ -351,6 +351,41 @@ class GaryCore:
 
         return gary_response
 
+    def chat_with_content(self, content_blocks, user_text):
+        """Send a message with mixed content (images, documents, text)."""
+        query = user_text or "file upload"
+        memories = retrieve_memories(query)
+        system_prompt = build_system_prompt(memories)
+
+        # Build content list: file blocks first, then user text
+        content = list(content_blocks)
+        if user_text:
+            content.append({"type": "text", "text": user_text})
+
+        self.conversation_history.append({
+            "role": "user",
+            "content": content
+        })
+
+        response = self.client.messages.create(
+            model=MODEL,
+            max_tokens=1024,
+            system=system_prompt,
+            messages=self.conversation_history
+        )
+
+        gary_response = response.content[0].text
+
+        # Store a text-only version in history for subsequent turns
+        display_text = f"[Uploaded file] {user_text}" if user_text else "[Uploaded file]"
+        self.conversation_history[-1] = {"role": "user", "content": display_text}
+        self.conversation_history.append({
+            "role": "assistant",
+            "content": gary_response
+        })
+
+        return gary_response
+
     def reset(self):
         self.conversation_history = []
 

@@ -4,3 +4,4 @@ uvicorn
 python-dotenv
 elevenlabs
 supabase
+python-multipart
