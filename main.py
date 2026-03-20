@@ -6,7 +6,7 @@ FastAPI + HTML/JS. Mobile-first with hamburger menu + voice input.
 import os
 import base64
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -107,6 +107,83 @@ async def chat(request: Request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+SUPPORTED_TEXT_TYPES  = {"text/plain", "text/markdown", "text/csv", "application/json",
+                          "text/html", "text/css", "text/javascript", "application/xml"}
+
+@app.post("/api/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    message: str = Form(default=""),
+    thread_id: str = Form(default=""),
+    voice: str = Form(default="false"),
+):
+    try:
+        content_type = file.content_type or ""
+        raw = await file.read()
+
+        content_blocks = []
+
+        if content_type in SUPPORTED_IMAGE_TYPES:
+            img_b64 = base64.standard_b64encode(raw).decode()
+            content_blocks.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": content_type, "data": img_b64},
+            })
+        elif content_type == "application/pdf":
+            pdf_b64 = base64.standard_b64encode(raw).decode()
+            content_blocks.append({
+                "type": "document",
+                "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64},
+            })
+        elif content_type in SUPPORTED_TEXT_TYPES or content_type.startswith("text/"):
+            text_content = raw.decode("utf-8", errors="replace")
+            filename = file.filename or "file"
+            content_blocks.append({
+                "type": "text",
+                "text": f"[File: {filename}]\n```\n{text_content}\n```",
+            })
+        else:
+            return JSONResponse(
+                {"error": f"Unsupported file type: {content_type}. Supported: images (jpg/png/gif/webp), PDF, and text files."},
+                status_code=400,
+            )
+
+        tid = int(thread_id) if thread_id.strip().isdigit() else None
+        if not tid:
+            tid = create_thread()
+            gary.reset()
+
+        msgs = load_thread_messages(tid)
+        if len(msgs) == 0:
+            title_text = message.strip() or file.filename or "File upload"
+            words = title_text.split()
+            title = " ".join(words[:6]) + ("..." if len(words) > 6 else "")
+            update_thread_title(tid, title)
+
+        gary_response = gary.chat_with_content(content_blocks, message.strip())
+
+        display_user = f"[Uploaded: {file.filename}]"
+        if message.strip():
+            display_user += f" {message.strip()}"
+        save_message(tid, "user", display_user)
+        save_message(tid, "assistant", gary_response)
+
+        audio_b64 = None
+        if voice.lower() == "true":
+            from gary_voice import speak
+            audio_path = speak(gary_response)
+            if audio_path:
+                with open(audio_path, "rb") as f_audio:
+                    audio_b64 = base64.b64encode(f_audio.read()).decode()
+                os.unlink(audio_path)
+
+        return JSONResponse({"response": gary_response, "thread_id": tid, "audio": audio_b64})
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -187,6 +264,15 @@ HTML = """<!DOCTYPE html>
   .mic-btn.listening { background: #3a1a1a; border-color: #ff4444; color: #ff4444; animation: pulse 1s infinite; }
   @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255,68,68,0.3); } 50% { box-shadow: 0 0 0 6px rgba(255,68,68,0); } }
 
+  /* UPLOAD */
+  .upload-btn { background: var(--surface); color: var(--muted); border: 1px solid var(--border); width: 44px; height: 44px; border-radius: 8px; cursor: pointer; font-size: 1.1rem; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: all 0.2s; }
+  .upload-btn:hover { color: var(--text); border-color: var(--accent2); }
+  .upload-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .file-preview { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.75rem; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; font-size: 0.75rem; color: var(--muted); margin-bottom: 0.5rem; }
+  .file-preview .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .file-preview .remove-file { cursor: pointer; color: var(--muted); font-size: 0.9rem; flex-shrink: 0; }
+  .file-preview .remove-file:hover { color: #ff4444; }
+
   /* DRAWER */
   .drawer-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100; }
   .drawer-overlay.open { display: block; }
@@ -249,7 +335,14 @@ HTML = """<!DOCTYPE html>
     </div>
     <div class="input-area">
       <button class="mic-btn" id="micBtn" onclick="toggleMic()" title="Voice input">🎤</button>
+      <button class="upload-btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()" title="Upload file">📎</button>
+      <input type="file" id="fileInput" style="display:none" accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.css,.js,.xml" onchange="handleFileSelect(event)">
       <div class="input-wrap">
+        <div id="filePreview" style="display:none" class="file-preview">
+          <span>📄</span>
+          <span class="file-name" id="filePreviewName"></span>
+          <span class="remove-file" onclick="clearFile()" title="Remove file">✕</span>
+        </div>
         <textarea id="msgInput" placeholder="Say something to Gary..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
       </div>
       <button class="send-btn" id="sendBtn" onclick="sendMessage()">Send</button>
@@ -325,52 +418,6 @@ HTML = """<!DOCTYPE html>
       document.getElementById('messages').innerHTML = '<div class="empty-state" id="emptyState"><div class="icon">🎩</div><p>Say something to Gary.</p></div>';
       await loadThreads();
     } catch(e) { console.error(e); }
-  }
-
-  async function sendMessage(messageOverride) {
-    const input = document.getElementById('msgInput');
-    const msg = messageOverride || input.value.trim();
-    if (!msg || isLoading) return;
-
-    isLoading = true;
-    document.getElementById('sendBtn').disabled = true;
-    if (!messageOverride) { input.value = ''; autoResize(input); }
-
-    const empty = document.getElementById('emptyState');
-    if (empty) empty.remove();
-
-    appendMessage('user', msg);
-    showTyping();
-
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg, thread_id: currentThreadId, voice: voiceEnabled })
-      });
-      const data = await res.json();
-      hideTyping();
-
-      if (data.error) {
-        appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*');
-      } else {
-        currentThreadId = data.thread_id;
-        appendMessage('gary', data.response);
-        if (data.audio) {
-          const audio = document.getElementById('audioPlayer');
-          audio.src = 'data:audio/mp3;base64,' + data.audio;
-          audio.play();
-        }
-        await loadThreads();
-      }
-    } catch(e) {
-      hideTyping();
-      appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*');
-    }
-
-    isLoading = false;
-    document.getElementById('sendBtn').disabled = false;
-    scrollToBottom();
   }
 
   function appendMessage(role, content) {
@@ -473,6 +520,133 @@ HTML = """<!DOCTYPE html>
     };
 
     recognition.start();
+  }
+
+  // File Upload
+  let selectedFile = null;
+
+  function handleFileSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    selectedFile = file;
+    document.getElementById('filePreviewName').textContent = file.name;
+    document.getElementById('filePreview').style.display = 'flex';
+    document.getElementById('msgInput').placeholder = 'Add a message (optional)...';
+  }
+
+  function clearFile() {
+    selectedFile = null;
+    document.getElementById('fileInput').value = '';
+    document.getElementById('filePreview').style.display = 'none';
+    document.getElementById('msgInput').placeholder = 'Say something to Gary...';
+  }
+
+  async function sendMessage(messageOverride) {
+    const input = document.getElementById('msgInput');
+    const msg = messageOverride || input.value.trim();
+
+    // If there's a file, use upload flow
+    if (selectedFile && !messageOverride) {
+      await sendWithFile(msg);
+      return;
+    }
+
+    if (!msg || isLoading) return;
+
+    isLoading = true;
+    document.getElementById('sendBtn').disabled = true;
+    document.getElementById('uploadBtn').disabled = true;
+    if (!messageOverride) { input.value = ''; autoResize(input); }
+
+    const empty = document.getElementById('emptyState');
+    if (empty) empty.remove();
+
+    appendMessage('user', msg);
+    showTyping();
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg, thread_id: currentThreadId, voice: voiceEnabled })
+      });
+      const data = await res.json();
+      hideTyping();
+
+      if (data.error) {
+        appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*');
+      } else {
+        currentThreadId = data.thread_id;
+        appendMessage('gary', data.response);
+        if (data.audio) {
+          const audio = document.getElementById('audioPlayer');
+          audio.src = 'data:audio/mp3;base64,' + data.audio;
+          audio.play();
+        }
+        await loadThreads();
+      }
+    } catch(e) {
+      hideTyping();
+      appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*');
+    }
+
+    isLoading = false;
+    document.getElementById('sendBtn').disabled = false;
+    document.getElementById('uploadBtn').disabled = false;
+    scrollToBottom();
+  }
+
+  async function sendWithFile(caption) {
+    if (!selectedFile || isLoading) return;
+
+    isLoading = true;
+    document.getElementById('sendBtn').disabled = true;
+    document.getElementById('uploadBtn').disabled = true;
+
+    const empty = document.getElementById('emptyState');
+    if (empty) empty.remove();
+
+    const displayMsg = caption ? `[${selectedFile.name}] ${caption}` : `[${selectedFile.name}]`;
+    appendMessage('user', displayMsg);
+    showTyping();
+
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+    formData.append('message', caption || '');
+    formData.append('thread_id', currentThreadId || '');
+    formData.append('voice', voiceEnabled ? 'true' : 'false');
+
+    const fileInput = document.getElementById('msgInput');
+    fileInput.value = '';
+    autoResize(fileInput);
+    clearFile();
+
+    try {
+      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      const data = await res.json();
+      hideTyping();
+
+      if (data.error) {
+        appendMessage('gary', `*Gary frowns at the file. ${data.error}*`);
+      } else {
+        currentThreadId = data.thread_id;
+        appendMessage('gary', data.response);
+        if (data.audio) {
+          const audio = document.getElementById('audioPlayer');
+          audio.src = 'data:audio/mp3;base64,' + data.audio;
+          audio.play();
+        }
+        await loadThreads();
+      }
+    } catch(e) {
+      hideTyping();
+      appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*');
+    }
+
+    isLoading = false;
+    document.getElementById('sendBtn').disabled = false;
+    document.getElementById('uploadBtn').disabled = false;
+    scrollToBottom();
   }
 
   loadThreads();
