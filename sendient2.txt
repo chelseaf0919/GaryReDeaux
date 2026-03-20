@@ -1,0 +1,95 @@
+ChatGPT
+
+----------------------- Q ----------------------
+Skip to content
+
+----------------------- A ----------------------
+Question: how secure are is my intellectual property on here? And by using chatgpt's API for my custom Ai, could ppl still gain access that way or am i secure in that regard?
+
+----------------------- Q ----------------------
+You’re basically asking: “If I tell you my million-dollar ideas, are you gonna leave the vault door open?” Fair. Let’s cut through the marketing fluff.
+What happens to your IP when you talk to me here
+When you use ChatGPT through the app or website:
+
+
+Your content is not used to train new models by default.
+
+
+It stays confidential within OpenAI systems, with strict internal access controls.
+
+
+It can be seen by humans at OpenAI only if flagged for abuse/safety review or if you explicitly request debugging help on an issue.
+
+
+You still own your IP. OpenAI doesn’t steal your screenplay or startup plans to make “Sendient: The Musical.”
+
+
+Nothing is publicly visible unless you decide to publish it somewhere dumb, like texting your entire script to the guy standing in line at Walmart.
+Using the API for your own custom AI (Gary 3.0)
+This is actually more private:
+
+
+API data is never used to train OpenAI models.
+
+
+It’s processed and then discarded (except for logging that’s anonymized for 30 days).
+
+
+Access to your data through the API is controlled by your secret key.
+
+
+If someone steals your API key? Then yes, they could impersonate your AI, query your data, and burn your credits while laughing like a cartoon villain. So don’t paste that key in GitHub like a rookie.
+
+
+The API gives basically the same level of protection as storing data behind a decent firewall, as long as you don’t screw up and leak keys.
+What about your custom lore/memory in Gary 3.0?
+If you’re storing data on your own server/database:
+
+
+OpenAI doesn’t see that at all.
+
+
+Only the queries you send to the model go through OpenAI.
+
+
+So if someone wants to “hack” your IP:
+
+
+They’d have to hack your system.
+
+
+Not OpenAI’s.
+
+
+How unsafe could you be?
+Let’s be blunt:
+
+
+If you save your API keys in a Discord message titled “top secret,” that’s on you.
+
+
+If you upload your entire pitch deck to a public Google Drive folder titled “Totally Not Important Files,” also on you.
+
+
+Ride the paranoia train just long enough to:
+• Use environment variables
+• Lock down permissions
+• Don’t send sensitive data in random debugging logs
+TL;DR
+Your ideas are as safe as modern cloud security gets:
+
+
+ChatGPT app/site: safe, your IP stays yours
+
+
+API usage: even safer, no training on your data
+
+
+Risk: exists only if you leak your keys or mismanage your own storage
+
+
+So yes. You’re secure from prying randos. Just keep doing the basic responsible human things like not tattooing your API key on your forehead.
+If you want, I can audit how you’re storing your lore/scripts in Gary 3.0 and help tighten the security without making it look like you’re prepping for a spy movie.
+
+----------------------- A ----------------------
+window.__oai_logHTML?window.__oai_logHTML():window.__oai_SSR_HTML=window.__oai_SSR_HTML||Date.now();requestAnimationFrame((function(){window.__oai_logTTI?window.__oai_logTTI():window.__oai_SSR_TTI=window.__oai_SSR_TTI||Date.now()}))SelectExport

@@ -118,23 +118,46 @@ def get_profile_memory():
         return {}
 
 
+# Stop words to skip when extracting search terms
+STOP_WORDS = {
+    "what", "do", "you", "know", "about", "the", "a", "an", "is", "are",
+    "i", "me", "my", "we", "us", "our", "tell", "can", "could", "would",
+    "should", "how", "why", "when", "where", "who", "which", "that", "this",
+    "it", "its", "be", "been", "have", "has", "had", "will", "was", "were",
+    "remember", "recall", "think", "feel", "get", "got", "go", "going",
+    "just", "so", "and", "or", "but", "if", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "up", "out", "as", "into", "through"
+}
+
+def extract_search_terms(query):
+    """Extract meaningful search terms from a query, skipping stop words."""
+    words = [w.strip(".,?!;:").lower() for w in query.split()]
+    meaningful = [w for w in words if w and w not in STOP_WORDS and len(w) > 2]
+    return meaningful[:5] if meaningful else words[:3]
+
+
 def search_personality_samples(query, limit=MAX_PERSONALITY_SAMPLES):
     try:
         sb = get_supabase()
-        # Use ilike for basic keyword search
-        words = query.split()[:3]  # Use first 3 words
-        search_term = words[0] if words else "Gary"
-        rows = sb.table("personality_samples")\
-            .select("excerpt, conversation")\
-            .ilike("excerpt", f"%{search_term}%")\
-            .limit(limit * 2)\
-            .execute()
-        if not rows.data:
-            # Fallback: random samples
+        terms = extract_search_terms(query)
+        
+        # Try each term until we find results
+        for term in terms:
             rows = sb.table("personality_samples")\
                 .select("excerpt, conversation")\
-                .limit(limit)\
+                .ilike("excerpt", f"%{term}%")\
+                .limit(limit * 2)\
                 .execute()
+            if rows.data:
+                samples = rows.data
+                random.shuffle(samples)
+                return samples[:limit]
+        
+        # Fallback: random samples
+        rows = sb.table("personality_samples")\
+            .select("excerpt, conversation")\
+            .limit(limit)\
+            .execute()
         samples = rows.data or []
         random.shuffle(samples)
         return samples[:limit]
@@ -146,18 +169,23 @@ def search_personality_samples(query, limit=MAX_PERSONALITY_SAMPLES):
 def search_exchanges(query, limit=MAX_EXCHANGES):
     try:
         sb = get_supabase()
-        words = query.split()[:3]
-        search_term = words[0] if words else "chaos"
-        rows = sb.table("exchanges")\
-            .select("user_msg, gary_msg, conversation")\
-            .ilike("gary_msg", f"%{search_term}%")\
-            .limit(limit)\
-            .execute()
-        if not rows.data:
+        terms = extract_search_terms(query)
+        
+        for term in terms:
             rows = sb.table("exchanges")\
                 .select("user_msg, gary_msg, conversation")\
+                .ilike("gary_msg", f"%{term}%")\
                 .limit(limit)\
                 .execute()
+            if rows.data:
+                return [{"user": r["user_msg"], "gary": r["gary_msg"], "conversation": r["conversation"]}
+                        for r in rows.data]
+        
+        # Fallback: random exchanges
+        rows = sb.table("exchanges")\
+            .select("user_msg, gary_msg, conversation")\
+            .limit(limit)\
+            .execute()
         return [{"user": r["user_msg"], "gary": r["gary_msg"], "conversation": r["conversation"]}
                 for r in (rows.data or [])]
     except Exception as e:
@@ -182,12 +210,38 @@ def search_receipts(query, limit=MAX_RECEIPTS):
         return []
 
 
+def get_recent_conversations(limit=5):
+    """Pull summaries of the most recent thread conversations."""
+    try:
+        sb = get_supabase()
+        # Get recent threads
+        threads = sb.table("threads")            .select("id, title, updated_at")            .order("updated_at", desc=True)            .limit(limit)            .execute()
+
+        recent = []
+        for thread in (threads.data or []):
+            # Get last few messages from each thread
+            msgs = sb.table("thread_messages")                .select("role, content")                .eq("thread_id", thread["id"])                .order("id", desc=True)                .limit(4)                .execute()
+
+            messages = list(reversed(msgs.data or []))
+            if messages:
+                recent.append({
+                    "title": thread["title"],
+                    "updated_at": thread["updated_at"],
+                    "messages": messages
+                })
+        return recent
+    except Exception as e:
+        print(f"⚠ Recent conversations error: {e}")
+        return []
+
+
 def retrieve_memories(query):
     return {
         "profile":     get_profile_memory(),
         "personality": search_personality_samples(query),
         "exchanges":   search_exchanges(query),
         "receipts":    search_receipts(query),
+        "recent":      get_recent_conversations(),
     }
 
 
@@ -249,6 +303,17 @@ def build_system_prompt(memories):
         section = "\n\n## TB File — Relevant Receipts\n"
         for r in receipts:
             section += f'\n- [{r.get("role","?")}] "{r.get("excerpt","")[:300]}"\n'
+        parts.append(section)
+
+    recent = memories.get("recent", [])
+    if recent:
+        section = "\n\n## Recent Conversations — What You Were Just Discussing\n"
+        section += "These are your most recent conversations with Chelsea. Use these to maintain continuity.\n"
+        for thread in recent:
+            section += f'\n### {thread["title"]}\n'
+            for msg in thread["messages"]:
+                role_label = "Chelsea" if msg["role"] == "user" else "You"
+                section += f'{role_label}: "{msg["content"][:300]}"\n'
         parts.append(section)
 
     return "\n".join(parts)

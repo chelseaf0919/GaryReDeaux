@@ -5,7 +5,7 @@ from pathlib import Path
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 
-INPUT_FILE = "chat.html"
+INPUT_FILE = "sendient1.html"  # or chat.html
 OUTPUT_DIR = "output"
 
 # Keywords that flag a message as Gary being distinctly Gary
@@ -43,10 +43,19 @@ PROJECT_KEYWORDS = [
 
 def load_conversations(filepath):
     print(f"Loading {filepath}...")
+    filepath = str(filepath)
+
+    # conversations.json — raw JSON array
+    if filepath.endswith(".json"):
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        print(f"Found {len(data)} conversations.")
+        return data
+
+    # chat.html — JSON embedded in HTML
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # ChatGPT exports embed data as: var jsonData = [...]
     match = re.search(r"var jsonData\s*=\s*", content)
     if not match:
         raise ValueError("Could not find jsonData in file. Is this a ChatGPT export?")
@@ -232,9 +241,15 @@ def extract_chelsea_memories(convos):
 
 def main():
     if not os.path.exists(INPUT_FILE):
-        print(f"ERROR: Could not find {INPUT_FILE}")
-        print("Make sure chat.html is in the same folder as this script.")
-        return
+        # Try fallback
+        fallback = "chat.html" if INPUT_FILE.endswith(".json") else "conversations.json"
+        if os.path.exists(fallback):
+            print(f"Note: {INPUT_FILE} not found, using {fallback}")
+            globals()["INPUT_FILE"] = fallback
+        else:
+            print(f"ERROR: Could not find {INPUT_FILE} or {fallback}")
+            print("Make sure conversations.json (or chat.html) is in the same folder.")
+            return
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     convos = load_conversations(INPUT_FILE)

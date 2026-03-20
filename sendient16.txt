@@ -1,0 +1,427 @@
+ChatGPT
+
+----------------------- Q ----------------------
+Skip to content
+
+----------------------- A ----------------------
+Ok, the proposal meeting with bytemage is in 45 min. I need a list of questions that I may need to ask them pls. Do u remember the PRD i showed you?
+
+----------------------- Q ----------------------
+Forty-five minutes. Love that for us. Nothing like a little cortisol to sharpen the brain. 🧠🔥
+And yes, I remember the whole ByteMage + RPD situation. Igloo API “forever” in the doc, which is cute considering you have patented lockbox tech and long-term OTP control plans. We are not accidentally outsourcing your crown jewels. Not today.
+Here’s your tight, founder-level question list so you walk in like a CEO, not a hopeful founder.
+
+🔒 PRODUCT & ARCHITECTURE
+1. Ownership & IP
+
+
+Who owns all code written for Sendient?
+
+
+Is it work-for-hire, and will ownership transfer immediately?
+
+
+Can any of our architecture or logic be reused in other client projects?
+
+
+How are we protecting proprietary lockbox logic?
+
+
+You want zero ambiguity here. None. Not “shared frameworks.” Not “inspired by.” Yours.
+
+2. Lockbox & OTP Architecture
+
+
+How is the OTP generation structured?
+
+
+Is it modular so we can replace IglooHomes API post-beta?
+
+
+Can the lock/unlock logic be fully swapped to our proprietary system without rewriting the app?
+
+
+What parts of the system would depend on Igloo?
+
+
+If they say “deep integration” without modularity, that’s a red flag 🚩.
+
+3. Backend Infrastructure
+
+
+What backend stack are you proposing?
+
+
+Who controls the hosting account?
+
+
+Will we have full admin access from day one?
+
+
+How is data structured (multi-tenant? scalable architecture?)
+
+
+You don’t want Sendient living inside ByteMage’s AWS account like a squatter.
+
+4. Scalability
+
+
+Can this architecture scale to multiple cities?
+
+
+What breaks first at 10k users?
+
+
+What breaks first at 100k users?
+
+
+Are we building MVP or scalable foundation?
+
+
+Make them think past “launch.” You’re building for acquisition.
+
+💰 COST & SCOPE CONTROL
+5. Scope Creep
+
+
+What exactly is included in Phase 1?
+
+
+What triggers additional cost?
+
+
+How do change requests get priced?
+
+
+What features are at risk of being deprioritized?
+
+
+No fuzzy lines. Fuzzy lines = surprise invoices.
+
+6. Payment Structure
+
+
+Milestone breakdown?
+
+
+What deliverables unlock payment?
+
+
+What happens if milestones are missed?
+
+
+
+🔐 SECURITY & LIABILITY
+7. Security
+
+
+How are we protecting driver/customer data?
+
+
+Is data encrypted at rest and in transit?
+
+
+What authentication protocol are we using?
+
+
+How is GPS tracking secured?
+
+
+You are handling chain-of-custody for legal/jewelry sectors. Security isn’t optional.
+
+📱 APP FUNCTIONALITY
+8. Core Features
+Confirm these explicitly:
+
+
+Real-time vehicle tracking
+
+
+Driver payout logic (85% model)
+
+
+Uber price comparison engine
+
+
+Messaging (in-app or third-party?)
+
+
+Stripe integration
+
+
+Admin dashboard controls
+
+
+Ask:
+“Are any of these being simplified for MVP?”
+
+🛠 FUTURE CONTROL
+9. Codebase Access
+
+
+Will we have full GitHub access?
+
+
+Will documentation be provided?
+
+
+If we switch dev teams, can another team step in easily?
+
+
+Never get trapped.
+
+🧠 STRATEGIC QUESTIONS (This is where you impress them)
+
+
+If you were me, what would you simplify?
+
+
+Where do you see technical risk?
+
+
+What part of this build concerns you most?
+
+
+Good dev shops respect founders who ask that.
+
+🏗 TEAM & EXECUTION
+
+
+Who is actually building this?
+
+
+Senior dev or junior?
+
+
+Have they built logistics platforms before?
+
+
+Can we see similar case studies?
+
+
+
+🧾 BETA STRATEGY
+
+
+What does “beta-ready” actually mean?
+
+
+What metrics should we track during beta?
+
+
+How long to stabilize post-beta?
+
+
+
+Bonus: If You Want To Test Them
+Ask:
+
+“If we remove Igloo API entirely after beta, what does that transition look like?”
+
+Watch how confident they are.
+
+Chelsea, this meeting isn’t you asking permission to build your dream.
+It’s you interviewing a technical partner to build a scalable logistics infrastructure that you plan to sell one day. 🏗✨
+Go in calm. Direct. Slightly intimidating.
+You’re not lucky to have them.
+They’re lucky to be building Sendient.
+Now go handle it.
+
+----------------------- A ----------------------
+Ok. Anything else you can think of? 
+
+----------------------- Q ----------------------
+You have 45 minutes and you’re already 80% armed. But since you insist on sharpening the sword one more time, let’s do it properly. 🗡️
+Here’s what founders forget to ask… and then regret six months later.
+
+🧨 EXIT & LOCK-IN PROTECTION
+1. If ByteMage disappears tomorrow…
+
+
+How quickly could another dev team take over?
+
+
+Is everything containerized / documented?
+
+
+Are we dependent on any proprietary ByteMage internal tools?
+
+
+If the answer is “well, we usually…” stop them. You want clean transferability.
+
+🧩 TECHNICAL DEBT
+2. Are we cutting corners for speed?
+
+
+What technical debt are we intentionally taking on?
+
+
+What will need refactoring within 12 months?
+
+
+What’s the cost of that refactor later?
+
+
+MVP shortcuts are fine. Hidden shortcuts are not.
+
+📊 ADMIN POWER (Founder Control)
+3. Admin Dashboard Capabilities
+Make sure you can:
+
+
+Freeze driver accounts
+
+
+Override payouts
+
+
+Manually generate OTPs if needed
+
+
+View chain-of-custody logs
+
+
+Export data (CSV)
+
+
+You do NOT want to email devs every time something goes sideways.
+
+💸 PAYMENT LOGIC EDGE CASES
+This one matters for your 85% model.
+
+
+How are failed payments handled?
+
+
+What happens if a client disputes a charge?
+
+
+How are refunds processed?
+
+
+Who eats Stripe fees?
+
+
+Ask them what happens in:
+
+
+A driver cancels mid-route
+
+
+A lockbox fails to unlock
+
+
+GPS signal drops
+
+
+You’re building logistics, not Candy Crush.
+
+🛰 GPS + FUTURE HARDWARE
+Since Paul asked about embedding GPS logic inactive:
+Ask:
+
+
+Can we scaffold future hardware hooks now?
+
+
+What’s the cost difference between adding it now vs later?
+
+
+Is the codebase modular enough to plug in lockbox firmware events later?
+
+
+You don’t want to retrofit hardware logic into a rigid system.
+
+📈 DATA STRATEGY
+Long-term acquisition play:
+
+
+Who owns user analytics?
+
+
+How is data stored?
+
+
+Can we easily extract usage data for investor reporting?
+
+
+What KPIs will the system automatically track?
+
+
+Uber price comparison is cute. Data leverage is powerful.
+
+⏳ TIMELINE REALITY CHECK
+Ask:
+
+“What’s most likely to delay this project?”
+
+Watch their face.
+That tells you everything.
+
+🧠 VISION ALIGNMENT TEST
+This is subtle but important:
+
+“Do you see this as a local Houston MVP, or something built to scale nationally?”
+
+You want them thinking Series A infrastructure, not hobby app.
+
+🚨 The One Question That Changes Everything
+Ask this calmly:
+
+“If this were your company, what would you do differently?”
+
+The quality of that answer will tell you whether they’re builders… or contractors.
+
+You are not pitching.
+You are vetting.
+And don’t forget this:
+If at any point you feel rushed, brushed off, or like your proprietary lockbox tech is being minimized… that’s your gut doing its job.
+You’re building Sendient to be acquired one day.
+You don’t build that on “good enough.”
+Now breathe. You’re ready. 🖤
+
+----------------------- A ----------------------
+Also, i dont have 45 min anymore. I have 9.
+
+----------------------- Q ----------------------
+Nine minutes.
+We are not building Rome. We are loading a weapon. 🔫
+Here’s your ultra-compressed kill list. If you ask nothing else, ask these.
+
+🧠 THE 6 QUESTIONS THAT ACTUALLY MATTER
+1️⃣ Who owns the code?
+“Is all code work-for-hire and fully transferred to Sendient?”
+No hedging. No shared rights. No reuse of your lockbox logic.
+
+2️⃣ Igloo Dependency
+“If we remove Igloo API after beta, what breaks?”
+Listen carefully. You want modular. Not embedded.
+
+3️⃣ Hosting Control
+“Whose AWS / hosting account is this built under?”
+Correct answer: yours.
+
+4️⃣ Admin Power
+“Will I have full admin control over drivers, payouts, OTPs, and data exports?”
+If you need to email them to fix things, that’s a problem.
+
+5️⃣ Scalability
+“Is this MVP code or scalable architecture?”
+You’re not building a school project.
+
+6️⃣ Exit Protection
+“If we switch dev teams in a year, can someone else easily take over?”
+Watch their confidence level.
+
+🧨 BONUS IF YOU HAVE 30 SECONDS
+“What is the biggest technical risk in this build?”
+If they say “none,” that’s the risk.
+
+That’s it.
+No rambling.
+No overthinking.
+You are calm. You are direct. You are evaluating them.
+Go. 🖤
+
+----------------------- A ----------------------
+window.__oai_logHTML?window.__oai_logHTML():window.__oai_SSR_HTML=window.__oai_SSR_HTML||Date.now();requestAnimationFrame((function(){window.__oai_logTTI?window.__oai_logTTI():window.__oai_SSR_TTI=window.__oai_SSR_TTI||Date.now()}))SelectExport
