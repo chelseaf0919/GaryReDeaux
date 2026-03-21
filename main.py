@@ -104,7 +104,9 @@ async def chat(request: Request):
         return JSONResponse({"response": gary_response, "thread_id": thread_id, "audio": audio_b64})
 
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+         import traceback
+         traceback.print_exc()
+    return JSONResponse({"error": str(e)}, status_code=500)
 
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
