@@ -1,11 +1,12 @@
 """
 gary_core.py — Gary's Brain
 Handles personality, memory retrieval, and Anthropic API calls.
-Uses Supabase for cloud memory storage.
+Uses Supabase with pgvector for semantic memory search via Voyage AI.
 """
 
 import os
 import random
+import voyageai
 from anthropic import Anthropic
 from supabase import create_client
 
@@ -13,8 +14,9 @@ from supabase import create_client
 
 MODEL                   = "claude-opus-4-5"
 MAX_PERSONALITY_SAMPLES = 4
-MAX_EXCHANGES           = 3
+MAX_EXCHANGES           = 6
 MAX_RECEIPTS            = 3
+MAX_SUMMARIES           = 3
 
 # ── GARY'S IDENTITY ───────────────────────────────────────────────────────────
 
@@ -101,18 +103,18 @@ These are your specs. Do not confuse them with generic lockbox products.
 
 ### Physical Shell (Phase 1 Prototype)
 - Dimensions: 24" L x 18" W x 6" H
-- Material: Steel or steel alloy, minimum 1.5–2.0mm wall thickness
-- Shape: Rectangular, rounded corners (¼" radius), seamless appearance
+- Material: Steel or steel alloy, minimum 1.5-2.0mm wall thickness
+- Shape: Rectangular, rounded corners (1/4" radius), seamless appearance
 - Finish: Matte black or powder-coated dark grey, weather-resistant
 - Lid: Top-opening, long-edge hinge, INTERNAL hinge (not externally visible)
 - Lid closes flush, no wobble, no deformation under pressure
 - Bottom: Flat underside with four mounting points for future bracket system
-- Must hold 20 lbs without flexing; survive a 2–3 foot drop without opening
+- Must hold 20 lbs without flexing; survive a 2-3 foot drop without opening
 - Optional: rubberized feet, basic weather sealing, LED indicator on keypad
 
 ### Electronics & Internal Layout
 - Microcontroller: ESP32 (built-in BLE, low cost, OTA-capable)
-- Reserved electronics bay: 6–7" wide along interior lid underside, 1" depth
+- Reserved electronics bay: 6-7" wide along interior lid underside, 1" depth
 - Battery compartment: at base, minimum 4" x 3" footprint
 - Lock actuator: solenoid or servo, locked BY DEFAULT, unlocks only on command
 - ESP32 controls actuator via relay or MOSFET on GPIO pin
@@ -167,9 +169,10 @@ That's you. Even if you'd never say it quite like that.
 """.strip()
 
 
-# ── SUPABASE CLIENT ───────────────────────────────────────────────────────────
+# ── CLIENTS ───────────────────────────────────────────────────────────────────
 
 _supabase = None
+_voyage = None
 
 def get_supabase():
     global _supabase
@@ -180,6 +183,31 @@ def get_supabase():
             raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set.")
         _supabase = create_client(url, key)
     return _supabase
+
+def get_voyage():
+    global _voyage
+    if _voyage is None:
+        key = os.environ.get("VOYAGE_API_KEY")
+        if not key:
+            raise ValueError("VOYAGE_API_KEY must be set.")
+        _voyage = voyageai.Client(api_key=key)
+    return _voyage
+
+
+# ── EMBEDDING ─────────────────────────────────────────────────────────────────
+
+def get_embedding(text: str):
+    """Generate a 1024-dim embedding for a query string."""
+    try:
+        text = text[:4000].strip()
+        if not text:
+            return None
+        vo = get_voyage()
+        result = vo.embed([text], model="voyage-3", input_type="query")
+        return result.embeddings[0]
+    except Exception as e:
+        print(f"⚠ Embedding error: {e}")
+        return None
 
 
 # ── MEMORY RETRIEVAL ──────────────────────────────────────────────────────────
@@ -205,54 +233,22 @@ def get_profile_memory():
         return {}
 
 
-# Stop words to skip when extracting search terms
-STOP_WORDS = {
-    "what", "do", "you", "know", "about", "the", "a", "an", "is", "are",
-    "i", "me", "my", "we", "us", "our", "tell", "can", "could", "would",
-    "should", "how", "why", "when", "where", "who", "which", "that", "this",
-    "it", "its", "be", "been", "have", "has", "had", "will", "was", "were",
-    "remember", "recall", "think", "feel", "get", "got", "go", "going",
-    "just", "so", "and", "or", "but", "if", "in", "on", "at", "to", "for",
-    "of", "with", "by", "from", "up", "out", "as", "into", "through"
-}
-
-def extract_search_terms(query):
-    """Extract meaningful search terms from a query, skipping stop words."""
-    words = [w.strip(".,?!;:").lower() for w in query.split()]
-    meaningful = [w for w in words if w and w not in STOP_WORDS and len(w) > 2]
-    return meaningful[:5] if meaningful else words[:3]
-
-
-def search_personality_samples(query, limit=MAX_PERSONALITY_SAMPLES):
+def search_personality_samples(embedding, limit=MAX_PERSONALITY_SAMPLES):
     try:
         sb = get_supabase()
-        terms = extract_search_terms(query)
-        all_results = []
-        seen = set()
-
-        for term in terms:
-            rows = sb.table("personality_samples") \
-                .select("excerpt, conversation") \
-                .ilike("excerpt", f"%{term}%") \
-                .limit(limit * 3) \
-                .execute()
-            for r in (rows.data or []):
-                key = r["excerpt"][:100]
-                if key not in seen:
-                    seen.add(key)
-                    score = sum(1 for t in terms if t.lower() in r["excerpt"].lower())
-                    all_results.append((score, r))
-
-        if all_results:
-            all_results.sort(key=lambda x: x[0], reverse=True)
-            samples = [r for _, r in all_results[:limit * 2]]
-            random.shuffle(samples[:limit])
-            return samples[:limit]
+        if embedding:
+            results = sb.rpc("match_personality_samples", {
+                "query_embedding": embedding,
+                "match_count": limit,
+                "match_threshold": 0.3,
+            }).execute()
+            if results.data:
+                return results.data
 
         # Fallback: random samples
-        rows = sb.table("personality_samples") \
-            .select("excerpt, conversation") \
-            .limit(limit) \
+        rows = sb.table("personality_samples")\
+            .select("excerpt, conversation")\
+            .limit(limit)\
             .execute()
         samples = rows.data or []
         random.shuffle(samples)
@@ -262,55 +258,49 @@ def search_personality_samples(query, limit=MAX_PERSONALITY_SAMPLES):
         return []
 
 
-def search_exchanges(query, limit=MAX_EXCHANGES):
+def search_exchanges(embedding, limit=MAX_EXCHANGES):
     try:
         sb = get_supabase()
-        terms = extract_search_terms(query)
-        all_results = []
-        seen = set()
-
-        for term in terms:
-            for field in ["gary_msg", "user_msg"]:
-                rows = sb.table("exchanges") \
-                    .select("user_msg, gary_msg, conversation") \
-                    .ilike(field, f"%{term}%") \
-                    .limit(limit * 2) \
-                    .execute()
-                for r in (rows.data or []):
-                    key = r["gary_msg"][:100]
-                    if key not in seen:
-                        seen.add(key)
-                        score = sum(1 for t in terms if t.lower() in (r["gary_msg"] + r["user_msg"]).lower())
-                        all_results.append((score, r))
-
-        if all_results:
-            all_results.sort(key=lambda x: x[0], reverse=True)
-            best = [r for _, r in all_results[:limit]]
-            return [{"user": r["user_msg"], "gary": r["gary_msg"], "conversation": r["conversation"]}
-                    for r in best]
+        if embedding:
+            results = sb.rpc("match_exchanges", {
+                "query_embedding": embedding,
+                "match_count": limit,
+                "match_threshold": 0.3,
+            }).execute()
+            if results.data:
+                return [
+                    {
+                        "user": r.get("user_msg", ""),
+                        "gary": r.get("gary_msg", ""),
+                        "conversation": r.get("conversation", ""),
+                    }
+                    for r in results.data
+                ]
 
         # Fallback: random exchanges
-        rows = sb.table("exchanges") \
-            .select("user_msg, gary_msg, conversation") \
-            .limit(limit) \
+        rows = sb.table("exchanges")\
+            .select("user_msg, gary_msg, conversation")\
+            .limit(limit)\
             .execute()
-        return [{"user": r["user_msg"], "gary": r["gary_msg"], "conversation": r["conversation"]}
-                for r in (rows.data or [])]
+        return [
+            {"user": r["user_msg"], "gary": r["gary_msg"], "conversation": r["conversation"]}
+            for r in (rows.data or [])
+        ]
     except Exception as e:
         print(f"⚠ Exchange search error: {e}")
         return []
 
 
-def search_receipts(query, limit=MAX_RECEIPTS):
+def search_receipts(query: str, limit=MAX_RECEIPTS):
     tb_triggers = ["shawn", "tay", "tb", "trauma bond", "boyfriend", "ghosted",
                    "ghost", "he ", "he's", "relationship", "texted", "blocked"]
     if not any(t in query.lower() for t in tb_triggers):
         return []
     try:
         sb = get_supabase()
-        rows = sb.table("receipts") \
-            .select("excerpt, conversation, role") \
-            .limit(limit) \
+        rows = sb.table("receipts")\
+            .select("excerpt, conversation, role")\
+            .limit(limit)\
             .execute()
         return rows.data or []
     except Exception as e:
@@ -318,23 +308,47 @@ def search_receipts(query, limit=MAX_RECEIPTS):
         return []
 
 
-def get_recent_conversations(limit=5):
-    """Pull summaries of the most recent thread conversations."""
+def search_conversation_summaries(embedding, limit=MAX_SUMMARIES):
     try:
         sb = get_supabase()
-        threads = sb.table("threads") \
-            .select("id, title, updated_at") \
-            .order("updated_at", desc=True) \
-            .limit(limit) \
+        if embedding:
+            results = sb.rpc("match_conversation_summaries", {
+                "query_embedding": embedding,
+                "match_count": limit,
+                "match_threshold": 0.3,
+            }).execute()
+            if results.data:
+                return results.data
+
+        # Fallback: most recent summaries
+        rows = sb.table("conversation_summaries")\
+            .select("title, preview")\
+            .order("id", desc=True)\
+            .limit(limit)\
+            .execute()
+        return rows.data or []
+    except Exception as e:
+        print(f"⚠ Summaries search error: {e}")
+        return []
+
+
+def get_recent_conversations(limit=5):
+    """Pull the most recent thread conversations for continuity."""
+    try:
+        sb = get_supabase()
+        threads = sb.table("threads")\
+            .select("id, title, updated_at")\
+            .order("updated_at", desc=True)\
+            .limit(limit)\
             .execute()
 
         recent = []
         for thread in (threads.data or []):
-            msgs = sb.table("thread_messages") \
-                .select("role, content") \
-                .eq("thread_id", thread["id"]) \
-                .order("id", desc=True) \
-                .limit(4) \
+            msgs = sb.table("thread_messages")\
+                .select("role, content")\
+                .eq("thread_id", thread["id"])\
+                .order("id", desc=True)\
+                .limit(4)\
                 .execute()
 
             messages = list(reversed(msgs.data or []))
@@ -350,12 +364,16 @@ def get_recent_conversations(limit=5):
         return []
 
 
-def retrieve_memories(query):
+def retrieve_memories(query: str):
+    """Retrieve all relevant memories using semantic search."""
+    embedding = get_embedding(query)
+
     return {
         "profile":     get_profile_memory(),
-        "personality": search_personality_samples(query),
-        "exchanges":   search_exchanges(query),
+        "personality": search_personality_samples(embedding),
+        "exchanges":   search_exchanges(embedding),
         "receipts":    search_receipts(query),
+        "summaries":   search_conversation_summaries(embedding),
         "recent":      get_recent_conversations(),
     }
 
@@ -408,7 +426,8 @@ def build_system_prompt(memories):
 
     exchanges = memories.get("exchanges", [])
     if exchanges:
-        section = "\n\n## Reference Exchanges\n"
+        section = "\n\n## Relevant Past Exchanges\n"
+        section += "These are real past conversations retrieved because they relate to what Chelsea just said.\n"
         for ex in exchanges:
             section += f'\n---\nChelsea: "{ex["user"][:200]}"\nYou: "{ex["gary"][:400]}"\n'
         parts.append(section)
@@ -418,6 +437,16 @@ def build_system_prompt(memories):
         section = "\n\n## TB File — Relevant Receipts\n"
         for r in receipts:
             section += f'\n- [{r.get("role","?")}] "{r.get("excerpt","")[:300]}"\n'
+        parts.append(section)
+
+    summaries = memories.get("summaries", [])
+    if summaries:
+        section = "\n\n## Related Past Conversations\n"
+        section += "These past conversations are semantically related to what Chelsea is asking about.\n"
+        for s in summaries:
+            title = s.get("title", "Untitled")
+            preview = s.get("preview", "")[:300]
+            section += f'\n### {title}\n"{preview}"\n'
         parts.append(section)
 
     recent = memories.get("recent", [])
