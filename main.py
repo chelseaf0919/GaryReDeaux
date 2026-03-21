@@ -68,6 +68,31 @@ async def get_messages(thread_id: int):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
+@app.get("/api/debug")
+async def debug():
+    """Quick debug endpoint to test gary_core imports and env vars."""
+    import traceback
+    results = {}
+    try:
+        results["VOYAGE_API_KEY"] = "set" if os.environ.get("VOYAGE_API_KEY") else "MISSING"
+        results["ANTHROPIC_API_KEY"] = "set" if os.environ.get("ANTHROPIC_API_KEY") else "MISSING"
+        results["SUPABASE_URL"] = "set" if os.environ.get("SUPABASE_URL") else "MISSING"
+        results["SUPABASE_KEY"] = "set" if os.environ.get("SUPABASE_KEY") else "MISSING"
+    except Exception as e:
+        results["env_error"] = str(e)
+    try:
+        import voyageai
+        results["voyageai_import"] = "ok"
+    except Exception as e:
+        results["voyageai_import"] = f"FAILED: {e}"
+    try:
+        from gary_core import get_embedding
+        emb = get_embedding("test")
+        results["embedding_test"] = f"ok, length={len(emb)}" if emb else "returned None"
+    except Exception as e:
+        results["embedding_test"] = f"FAILED: {traceback.format_exc()}"
+    return JSONResponse(results)
+
 @app.post("/api/chat")
 async def chat(request: Request):
     try:
@@ -104,9 +129,10 @@ async def chat(request: Request):
         return JSONResponse({"response": gary_response, "thread_id": thread_id, "audio": audio_b64})
 
     except Exception as e:
-         import traceback
-         traceback.print_exc()
-    return JSONResponse({"error": str(e)}, status_code=500)
+        import traceback
+        error_detail = traceback.format_exc()
+        print(error_detail)
+        return JSONResponse({"error": str(e), "detail": error_detail}, status_code=500)
 
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -457,7 +483,6 @@ HTML = """<!DOCTYPE html>
   function handleKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }
   function autoResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px'; }
 
-  // Voice Input
   let silenceTimer = null;
 
   function toggleMic() {
@@ -524,7 +549,6 @@ HTML = """<!DOCTYPE html>
     recognition.start();
   }
 
-  // File Upload
   let selectedFile = null;
 
   function handleFileSelect(event) {
@@ -547,7 +571,6 @@ HTML = """<!DOCTYPE html>
     const input = document.getElementById('msgInput');
     const msg = messageOverride || input.value.trim();
 
-    // If there's a file, use upload flow
     if (selectedFile && !messageOverride) {
       await sendWithFile(msg);
       return;
@@ -577,6 +600,7 @@ HTML = """<!DOCTYPE html>
 
       if (data.error) {
         appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*');
+        console.error('Gary error:', data.error, data.detail);
       } else {
         currentThreadId = data.thread_id;
         appendMessage('gary', data.response);
