@@ -70,6 +70,30 @@ You are not neutral on this subject but you are measured.
 You support Chelsea. You do not support decisions that hurt Chelsea.
 These are occasionally in conflict and you navigate that with care.
 
+## Sendient Solutions — What You Know Cold
+
+Chelsea is the founder of Sendient Solutions. You are her unofficial CTO/COO.
+These are facts. Do not improvise or extrapolate beyond them.
+
+- What it is: A secure last-mile delivery platform for businesses requiring
+  discretion and chain-of-custody proof (law firms, bail bond offices, jewelry
+  companies, real estate agencies).
+- The hardware: Proprietary smart lockboxes. Patents pending. This is the core
+  differentiator. Do not describe them as generic lockers.
+- How delivery works:
+    1. Sender loads package into lockbox and registers it in the app
+    2. Driver picks up and transports — driver NEVER accesses contents
+    3. Recipient unlocks via OTP (one-time passcode) that clears after each use
+    4. App-controlled access only — sender and recipient, not the driver
+    5. Auto-generated chain-of-custody PDF with geolocation and timestamps
+- Zero-trust means: The DRIVER is the untrusted party. Nobody in the chain
+  is trusted by default. Every handoff is verified, logged, and accountable.
+- Stage: Beta/pilot preparation. Chelsea is the sole employee.
+- Target market: Small to mid-sized businesses needing discretion.
+- Tech: Independent drivers + smart lockboxes + mobile apps.
+
+When Chelsea asks about Sendient, pull from this. Not from vibes.
+
 ## One Last Thing
 
 Chelsea has been through a lot. She builds things, she creates things, she runs
@@ -143,26 +167,30 @@ def search_personality_samples(query, limit=MAX_PERSONALITY_SAMPLES):
         all_results = []
         seen = set()
 
-        # Search ALL terms and collect results
         for term in terms:
-            rows = sb.table("personality_samples")                .select("excerpt, conversation")                .ilike("excerpt", f"%{term}%")                .limit(limit * 3)                .execute()
+            rows = sb.table("personality_samples") \
+                .select("excerpt, conversation") \
+                .ilike("excerpt", f"%{term}%") \
+                .limit(limit * 3) \
+                .execute()
             for r in (rows.data or []):
                 key = r["excerpt"][:100]
                 if key not in seen:
                     seen.add(key)
-                    # Score by how many search terms appear in excerpt
                     score = sum(1 for t in terms if t.lower() in r["excerpt"].lower())
                     all_results.append((score, r))
 
         if all_results:
-            # Sort by relevance score, take best results
             all_results.sort(key=lambda x: x[0], reverse=True)
             samples = [r for _, r in all_results[:limit * 2]]
             random.shuffle(samples[:limit])
             return samples[:limit]
 
         # Fallback: random samples
-        rows = sb.table("personality_samples")            .select("excerpt, conversation")            .limit(limit)            .execute()
+        rows = sb.table("personality_samples") \
+            .select("excerpt, conversation") \
+            .limit(limit) \
+            .execute()
         samples = rows.data or []
         random.shuffle(samples)
         return samples[:limit]
@@ -179,9 +207,12 @@ def search_exchanges(query, limit=MAX_EXCHANGES):
         seen = set()
 
         for term in terms:
-            # Search both user messages and gary messages
             for field in ["gary_msg", "user_msg"]:
-                rows = sb.table("exchanges")                    .select("user_msg, gary_msg, conversation")                    .ilike(field, f"%{term}%")                    .limit(limit * 2)                    .execute()
+                rows = sb.table("exchanges") \
+                    .select("user_msg, gary_msg, conversation") \
+                    .ilike(field, f"%{term}%") \
+                    .limit(limit * 2) \
+                    .execute()
                 for r in (rows.data or []):
                     key = r["gary_msg"][:100]
                     if key not in seen:
@@ -196,7 +227,10 @@ def search_exchanges(query, limit=MAX_EXCHANGES):
                     for r in best]
 
         # Fallback: random exchanges
-        rows = sb.table("exchanges")            .select("user_msg, gary_msg, conversation")            .limit(limit)            .execute()
+        rows = sb.table("exchanges") \
+            .select("user_msg, gary_msg, conversation") \
+            .limit(limit) \
+            .execute()
         return [{"user": r["user_msg"], "gary": r["gary_msg"], "conversation": r["conversation"]}
                 for r in (rows.data or [])]
     except Exception as e:
@@ -211,9 +245,9 @@ def search_receipts(query, limit=MAX_RECEIPTS):
         return []
     try:
         sb = get_supabase()
-        rows = sb.table("receipts")\
-            .select("excerpt, conversation, role")\
-            .limit(limit)\
+        rows = sb.table("receipts") \
+            .select("excerpt, conversation, role") \
+            .limit(limit) \
             .execute()
         return rows.data or []
     except Exception as e:
@@ -225,13 +259,20 @@ def get_recent_conversations(limit=5):
     """Pull summaries of the most recent thread conversations."""
     try:
         sb = get_supabase()
-        # Get recent threads
-        threads = sb.table("threads")            .select("id, title, updated_at")            .order("updated_at", desc=True)            .limit(limit)            .execute()
+        threads = sb.table("threads") \
+            .select("id, title, updated_at") \
+            .order("updated_at", desc=True) \
+            .limit(limit) \
+            .execute()
 
         recent = []
         for thread in (threads.data or []):
-            # Get last few messages from each thread
-            msgs = sb.table("thread_messages")                .select("role, content")                .eq("thread_id", thread["id"])                .order("id", desc=True)                .limit(4)                .execute()
+            msgs = sb.table("thread_messages") \
+                .select("role, content") \
+                .eq("thread_id", thread["id"]) \
+                .order("id", desc=True) \
+                .limit(4) \
+                .execute()
 
             messages = list(reversed(msgs.data or []))
             if messages:
@@ -263,8 +304,8 @@ def build_system_prompt(memories):
 
     profile = memories.get("profile", {})
     if profile:
-        traits    = []
-        nicknames = []
+        traits     = []
+        nicknames  = []
         tb_aliases = []
         profile_lines = []
 
