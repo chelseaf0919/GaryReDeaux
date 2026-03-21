@@ -140,24 +140,29 @@ def search_personality_samples(query, limit=MAX_PERSONALITY_SAMPLES):
     try:
         sb = get_supabase()
         terms = extract_search_terms(query)
-        
-        # Try each term until we find results
+        all_results = []
+        seen = set()
+
+        # Search ALL terms and collect results
         for term in terms:
-            rows = sb.table("personality_samples")\
-                .select("excerpt, conversation")\
-                .ilike("excerpt", f"%{term}%")\
-                .limit(limit * 2)\
-                .execute()
-            if rows.data:
-                samples = rows.data
-                random.shuffle(samples)
-                return samples[:limit]
-        
+            rows = sb.table("personality_samples")                .select("excerpt, conversation")                .ilike("excerpt", f"%{term}%")                .limit(limit * 3)                .execute()
+            for r in (rows.data or []):
+                key = r["excerpt"][:100]
+                if key not in seen:
+                    seen.add(key)
+                    # Score by how many search terms appear in excerpt
+                    score = sum(1 for t in terms if t.lower() in r["excerpt"].lower())
+                    all_results.append((score, r))
+
+        if all_results:
+            # Sort by relevance score, take best results
+            all_results.sort(key=lambda x: x[0], reverse=True)
+            samples = [r for _, r in all_results[:limit * 2]]
+            random.shuffle(samples[:limit])
+            return samples[:limit]
+
         # Fallback: random samples
-        rows = sb.table("personality_samples")\
-            .select("excerpt, conversation")\
-            .limit(limit)\
-            .execute()
+        rows = sb.table("personality_samples")            .select("excerpt, conversation")            .limit(limit)            .execute()
         samples = rows.data or []
         random.shuffle(samples)
         return samples[:limit]
@@ -170,22 +175,28 @@ def search_exchanges(query, limit=MAX_EXCHANGES):
     try:
         sb = get_supabase()
         terms = extract_search_terms(query)
-        
+        all_results = []
+        seen = set()
+
         for term in terms:
-            rows = sb.table("exchanges")\
-                .select("user_msg, gary_msg, conversation")\
-                .ilike("gary_msg", f"%{term}%")\
-                .limit(limit)\
-                .execute()
-            if rows.data:
-                return [{"user": r["user_msg"], "gary": r["gary_msg"], "conversation": r["conversation"]}
-                        for r in rows.data]
-        
+            # Search both user messages and gary messages
+            for field in ["gary_msg", "user_msg"]:
+                rows = sb.table("exchanges")                    .select("user_msg, gary_msg, conversation")                    .ilike(field, f"%{term}%")                    .limit(limit * 2)                    .execute()
+                for r in (rows.data or []):
+                    key = r["gary_msg"][:100]
+                    if key not in seen:
+                        seen.add(key)
+                        score = sum(1 for t in terms if t.lower() in (r["gary_msg"] + r["user_msg"]).lower())
+                        all_results.append((score, r))
+
+        if all_results:
+            all_results.sort(key=lambda x: x[0], reverse=True)
+            best = [r for _, r in all_results[:limit]]
+            return [{"user": r["user_msg"], "gary": r["gary_msg"], "conversation": r["conversation"]}
+                    for r in best]
+
         # Fallback: random exchanges
-        rows = sb.table("exchanges")\
-            .select("user_msg, gary_msg, conversation")\
-            .limit(limit)\
-            .execute()
+        rows = sb.table("exchanges")            .select("user_msg, gary_msg, conversation")            .limit(limit)            .execute()
         return [{"user": r["user_msg"], "gary": r["gary_msg"], "conversation": r["conversation"]}
                 for r in (rows.data or [])]
     except Exception as e:
@@ -344,41 +355,6 @@ class GaryCore:
 
         gary_response = response.content[0].text
 
-        self.conversation_history.append({
-            "role": "assistant",
-            "content": gary_response
-        })
-
-        return gary_response
-
-    def chat_with_content(self, content_blocks, user_text):
-        """Send a message with mixed content (images, documents, text)."""
-        query = user_text or "file upload"
-        memories = retrieve_memories(query)
-        system_prompt = build_system_prompt(memories)
-
-        # Build content list: file blocks first, then user text
-        content = list(content_blocks)
-        if user_text:
-            content.append({"type": "text", "text": user_text})
-
-        self.conversation_history.append({
-            "role": "user",
-            "content": content
-        })
-
-        response = self.client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            system=system_prompt,
-            messages=self.conversation_history
-        )
-
-        gary_response = response.content[0].text
-
-        # Store a text-only version in history for subsequent turns
-        display_text = f"[Uploaded file] {user_text}" if user_text else "[Uploaded file]"
-        self.conversation_history[-1] = {"role": "user", "content": display_text}
         self.conversation_history.append({
             "role": "assistant",
             "content": gary_response
