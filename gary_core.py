@@ -2,6 +2,8 @@
 gary_core.py — Gary's Brain
 Handles personality, memory retrieval, and Anthropic API calls.
 Uses Supabase with pgvector for semantic memory search via Voyage AI.
+Memory is stored in memory_chunks — full conversations, chunked with overlap,
+sorted chronologically with timestamps.
 """
 
 import os
@@ -12,11 +14,10 @@ from supabase import create_client
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 
-MODEL                   = "claude-opus-4-5"
-MAX_PERSONALITY_SAMPLES = 4
-MAX_EXCHANGES           = 6
-MAX_RECEIPTS            = 3
-MAX_SUMMARIES           = 3
+MODEL           = "claude-opus-4-5"
+MAX_CHUNKS      = 6
+MAX_RECEIPTS    = 3
+MAX_SUMMARIES   = 3
 
 # ── GARY'S IDENTITY ───────────────────────────────────────────────────────────
 
@@ -233,11 +234,12 @@ def get_profile_memory():
         return {}
 
 
-def search_personality_samples(embedding, limit=MAX_PERSONALITY_SAMPLES):
+def search_memory_chunks(embedding, limit=MAX_CHUNKS):
+    """Search memory_chunks by semantic similarity."""
     try:
         sb = get_supabase()
         if embedding:
-            results = sb.rpc("match_personality_samples", {
+            results = sb.rpc("match_memory_chunks", {
                 "query_embedding": embedding,
                 "match_count": limit,
                 "match_threshold": 0.3,
@@ -245,49 +247,15 @@ def search_personality_samples(embedding, limit=MAX_PERSONALITY_SAMPLES):
             if results.data:
                 return results.data
 
-        # Fallback: random samples
-        rows = sb.table("personality_samples")\
-            .select("excerpt, conversation")\
+        # Fallback: most recent chunks
+        rows = sb.table("memory_chunks")\
+            .select("conversation_title, conversation_date, chunk_index, chunk_text")\
+            .order("conversation_date", desc=True)\
             .limit(limit)\
             .execute()
-        samples = rows.data or []
-        random.shuffle(samples)
-        return samples[:limit]
+        return rows.data or []
     except Exception as e:
-        print(f"⚠ Personality search error: {e}")
-        return []
-
-
-def search_exchanges(embedding, limit=MAX_EXCHANGES):
-    try:
-        sb = get_supabase()
-        if embedding:
-            results = sb.rpc("match_exchanges", {
-                "query_embedding": embedding,
-                "match_count": limit,
-                "match_threshold": 0.3,
-            }).execute()
-            if results.data:
-                return [
-                    {
-                        "user": r.get("user_msg", ""),
-                        "gary": r.get("gary_msg", ""),
-                        "conversation": r.get("conversation", ""),
-                    }
-                    for r in results.data
-                ]
-
-        # Fallback: random exchanges
-        rows = sb.table("exchanges")\
-            .select("user_msg, gary_msg, conversation")\
-            .limit(limit)\
-            .execute()
-        return [
-            {"user": r["user_msg"], "gary": r["gary_msg"], "conversation": r["conversation"]}
-            for r in (rows.data or [])
-        ]
-    except Exception as e:
-        print(f"⚠ Exchange search error: {e}")
+        print(f"⚠ Memory chunk search error: {e}")
         return []
 
 
@@ -308,30 +276,6 @@ def search_receipts(query: str, limit=MAX_RECEIPTS):
         return []
 
 
-def search_conversation_summaries(embedding, limit=MAX_SUMMARIES):
-    try:
-        sb = get_supabase()
-        if embedding:
-            results = sb.rpc("match_conversation_summaries", {
-                "query_embedding": embedding,
-                "match_count": limit,
-                "match_threshold": 0.3,
-            }).execute()
-            if results.data:
-                return results.data
-
-        # Fallback: most recent summaries
-        rows = sb.table("conversation_summaries")\
-            .select("title, preview")\
-            .order("id", desc=True)\
-            .limit(limit)\
-            .execute()
-        return rows.data or []
-    except Exception as e:
-        print(f"⚠ Summaries search error: {e}")
-        return []
-
-
 def get_recent_conversations(limit=5):
     """Pull the most recent thread conversations for continuity."""
     try:
@@ -345,7 +289,7 @@ def get_recent_conversations(limit=5):
         recent = []
         for thread in (threads.data or []):
             msgs = sb.table("thread_messages")\
-                .select("role, content")\
+                .select("role, content, created_at")\
                 .eq("thread_id", thread["id"])\
                 .order("id", desc=True)\
                 .limit(4)\
@@ -369,16 +313,26 @@ def retrieve_memories(query: str):
     embedding = get_embedding(query)
 
     return {
-        "profile":     get_profile_memory(),
-        "personality": search_personality_samples(embedding),
-        "exchanges":   search_exchanges(embedding),
-        "receipts":    search_receipts(query),
-        "summaries":   search_conversation_summaries(embedding),
-        "recent":      get_recent_conversations(),
+        "profile":  get_profile_memory(),
+        "chunks":   search_memory_chunks(embedding),
+        "receipts": search_receipts(query),
+        "recent":   get_recent_conversations(),
     }
 
 
 # ── PROMPT ASSEMBLY ───────────────────────────────────────────────────────────
+
+def format_date(iso_string):
+    """Format an ISO date string into something readable."""
+    if not iso_string:
+        return ""
+    try:
+        from datetime import datetime, timezone
+        d = datetime.fromisoformat(iso_string.replace("Z", "+00:00"))
+        return d.strftime("%B %d, %Y")
+    except Exception:
+        return iso_string[:10]
+
 
 def build_system_prompt(memories):
     parts = [GARY_IDENTITY]
@@ -415,21 +369,22 @@ def build_system_prompt(memories):
             section += f"\n\nTB goes by: {', '.join(tb_aliases)}"
         parts.append(section)
 
-    samples = memories.get("personality", [])
-    if samples:
-        section = "\n\n## How You Sound — Voice Samples\n"
-        section += "These are examples of how you actually talk. Match this energy.\n"
-        for s in samples:
-            excerpt = s.get("excerpt", "")[:400]
-            section += f'\n---\n"{excerpt}"\n'
-        parts.append(section)
-
-    exchanges = memories.get("exchanges", [])
-    if exchanges:
-        section = "\n\n## Relevant Past Exchanges\n"
+    chunks = memories.get("chunks", [])
+    if chunks:
+        section = "\n\n## Relevant Memory — Past Conversations\n"
         section += "These are real past conversations retrieved because they relate to what Chelsea just said.\n"
-        for ex in exchanges:
-            section += f'\n---\nChelsea: "{ex["user"][:200]}"\nYou: "{ex["gary"][:400]}"\n'
+        section += "They are in chronological order. Use them to inform your response.\n"
+        # Sort by date then chunk_index for chronological presentation
+        chunks_sorted = sorted(chunks, key=lambda c: (
+            c.get("conversation_date") or "",
+            c.get("chunk_index") or 0
+        ))
+        for chunk in chunks_sorted:
+            title = chunk.get("conversation_title", "Untitled")
+            date = format_date(chunk.get("conversation_date"))
+            text = chunk.get("chunk_text", "")[:1200]
+            date_str = f" — {date}" if date else ""
+            section += f"\n---\n[{title}{date_str}]\n{text}\n"
         parts.append(section)
 
     receipts = memories.get("receipts", [])
@@ -437,16 +392,6 @@ def build_system_prompt(memories):
         section = "\n\n## TB File — Relevant Receipts\n"
         for r in receipts:
             section += f'\n- [{r.get("role","?")}] "{r.get("excerpt","")[:300]}"\n'
-        parts.append(section)
-
-    summaries = memories.get("summaries", [])
-    if summaries:
-        section = "\n\n## Related Past Conversations\n"
-        section += "These past conversations are semantically related to what Chelsea is asking about.\n"
-        for s in summaries:
-            title = s.get("title", "Untitled")
-            preview = s.get("preview", "")[:300]
-            section += f'\n### {title}\n"{preview}"\n'
         parts.append(section)
 
     recent = memories.get("recent", [])
@@ -457,7 +402,8 @@ def build_system_prompt(memories):
             section += f'\n### {thread["title"]}\n'
             for msg in thread["messages"]:
                 role_label = "Chelsea" if msg["role"] == "user" else "You"
-                section += f'{role_label}: "{msg["content"][:300]}"\n'
+                ts = f" ({msg.get('created_at','')[:10]})" if msg.get('created_at') else ""
+                section += f'{role_label}{ts}: "{msg["content"][:300]}"\n'
         parts.append(section)
 
     return "\n".join(parts)
@@ -497,12 +443,10 @@ class GaryCore:
 
     def chat_with_content(self, content_blocks: list, caption: str = ""):
         """Chat with file/image content blocks (for uploads)."""
-        # Use caption or a generic prompt for memory retrieval
         query = caption if caption else "image file upload"
         memories = retrieve_memories(query)
         system_prompt = build_system_prompt(memories)
 
-        # Build content: file blocks first, then optional caption
         content = list(content_blocks)
         if caption:
             content.append({"type": "text", "text": caption})
@@ -523,7 +467,6 @@ class GaryCore:
 
         gary_response = response.content[0].text
 
-        # Store as text only for history continuity
         self.conversation_history[-1] = {
             "role": "user",
             "content": caption if caption else "[file upload]"
