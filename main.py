@@ -36,7 +36,7 @@ def get_all_threads():
     return res.data or []
 
 def load_thread_messages(thread_id):
-    res = get_supabase().table("thread_messages").select("role, content").eq("thread_id", thread_id).order("id").execute()
+    res = get_supabase().table("thread_messages").select("role, content, created_at").eq("thread_id", thread_id).order("id").execute()
     return res.data or []
 
 def save_message(thread_id, role, content):
@@ -63,14 +63,13 @@ async def get_messages(thread_id: int):
     try:
         messages = load_thread_messages(thread_id)
         gary.reset()
-        gary.conversation_history = messages
+        gary.conversation_history = [{"role": m["role"], "content": m["content"]} for m in messages]
         return JSONResponse(messages)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.get("/api/debug")
 async def debug():
-    """Quick debug endpoint to test gary_core imports and env vars."""
     import traceback
     results = {}
     try:
@@ -264,6 +263,9 @@ HTML = """<!DOCTYPE html>
   .message.user .bubble { background: var(--user-bg); border: 1px solid var(--border); border-top-right-radius: 2px; }
   .message.gary .bubble { background: var(--gary-bg); border: 1px solid var(--border); border-top-left-radius: 2px; }
   .message.gary .bubble em { color: var(--muted); font-style: italic; }
+  .timestamp { font-size: 0.65rem; color: var(--muted); margin-top: 0.25rem; padding: 0 0.25rem; }
+  .message.user .timestamp { text-align: right; }
+  .message.gary .timestamp { text-align: left; }
   .typing { display: flex; gap: 4px; padding: 0.75rem 1rem; background: var(--gary-bg); border: 1px solid var(--border); border-radius: 10px; border-top-left-radius: 2px; width: fit-content; }
   .typing span { width: 6px; height: 6px; background: var(--muted); border-radius: 50%; animation: bounce 1.2s infinite; }
   .typing span:nth-child(2) { animation-delay: 0.2s; }
@@ -403,6 +405,18 @@ HTML = """<!DOCTYPE html>
     document.getElementById('drawerOverlay').classList.remove('open');
   }
 
+  function formatTimestamp(isoString) {
+    if (!isoString) return '';
+    const d = new Date(isoString);
+    const now = new Date();
+    const diffDays = Math.floor((now - d) / (1000 * 60 * 60 * 24));
+    const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (diffDays === 0) return time;
+    if (diffDays === 1) return 'Yesterday ' + time;
+    if (diffDays < 7) return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + time;
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time;
+  }
+
   async function loadThreads() {
     try {
       const res = await fetch('/api/threads');
@@ -431,7 +445,7 @@ HTML = """<!DOCTYPE html>
       if (messages.length === 0) {
         container.innerHTML = '<div class="empty-state" id="emptyState"><div class="icon">🎩</div><p>Say something to Gary.</p></div>';
       } else {
-        messages.forEach(m => appendMessage(m.role, m.content));
+        messages.forEach(m => appendMessage(m.role, m.content, m.created_at));
       }
       scrollToBottom();
       await loadThreads();
@@ -448,18 +462,29 @@ HTML = """<!DOCTYPE html>
     } catch(e) { console.error(e); }
   }
 
-  function appendMessage(role, content) {
+  function appendMessage(role, content, timestamp) {
     const container = document.getElementById('messages');
     const div = document.createElement('div');
     div.className = 'message ' + (role === 'user' ? 'user' : 'gary');
     const avatar = document.createElement('div');
     avatar.className = 'avatar';
     avatar.textContent = role === 'user' ? '🦝' : '🎩';
+    const msgWrap = document.createElement('div');
+    msgWrap.style.display = 'flex';
+    msgWrap.style.flexDirection = 'column';
+    msgWrap.style.maxWidth = '100%';
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     bubble.innerHTML = content.replace(/[*]([^*]+)[*]/g, '<em>*$1*</em>');
+    msgWrap.appendChild(bubble);
+    if (timestamp) {
+      const ts = document.createElement('div');
+      ts.className = 'timestamp';
+      ts.textContent = formatTimestamp(timestamp);
+      msgWrap.appendChild(ts);
+    }
     div.appendChild(avatar);
-    div.appendChild(bubble);
+    div.appendChild(msgWrap);
     container.appendChild(div);
     scrollToBottom();
   }
@@ -483,7 +508,11 @@ HTML = """<!DOCTYPE html>
   function handleKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }
   function autoResize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px'; }
 
-  let silenceTimer = null;
+  // ── VOICE INPUT ──────────────────────────────────────────────────────────────
+  // Uses non-continuous mode to avoid echo/repeat issues.
+  // Collects the full final transcript then sends once on recognition end.
+
+  let micSent = false;
 
   function toggleMic() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -493,15 +522,15 @@ HTML = """<!DOCTYPE html>
     }
 
     if (isListening) {
-      clearTimeout(silenceTimer);
       recognition.stop();
       return;
     }
 
+    micSent = false;
     recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
-    recognition.continuous = true;
-    recognition.interimResults = true;
+    recognition.continuous = false;      // single utterance — stops automatically
+    recognition.interimResults = false;  // final results only — no repeating partials
 
     recognition.onstart = () => {
       isListening = true;
@@ -511,25 +540,16 @@ HTML = """<!DOCTYPE html>
     };
 
     recognition.onresult = (event) => {
-      let interim = '';
-      let final = '';
+      // Grab only the final transcript from this single utterance
+      let transcript = '';
       for (let i = 0; i < event.results.length; i++) {
         if (event.results[i].isFinal) {
-          final += event.results[i][0].transcript;
-        } else {
-          interim += event.results[i][0].transcript;
+          transcript += event.results[i][0].transcript;
         }
       }
-      const transcript = final + interim;
-      document.getElementById('msgInput').value = transcript;
-      autoResize(document.getElementById('msgInput'));
-
-      clearTimeout(silenceTimer);
-      if (final) {
-        silenceTimer = setTimeout(() => {
-          recognition.stop();
-          setTimeout(() => sendMessage(), 200);
-        }, 1500);
+      if (transcript.trim()) {
+        document.getElementById('msgInput').value = transcript.trim();
+        autoResize(document.getElementById('msgInput'));
       }
     };
 
@@ -538,16 +558,26 @@ HTML = """<!DOCTYPE html>
       document.getElementById('micBtn').classList.remove('listening');
       document.getElementById('micBtn').textContent = '🎤';
       document.getElementById('msgInput').placeholder = 'Say something to Gary...';
+      // Send once, only if we have content and haven't already sent
+      const msg = document.getElementById('msgInput').value.trim();
+      if (msg && !micSent && !isLoading) {
+        micSent = true;
+        setTimeout(() => sendMessage(), 100);
+      }
     };
 
     recognition.onerror = (e) => {
-      if (e.error !== 'aborted') console.error('Speech error:', e);
-      clearTimeout(silenceTimer);
-      recognition.stop();
+      if (e.error !== 'aborted') console.error('Speech error:', e.error);
+      isListening = false;
+      document.getElementById('micBtn').classList.remove('listening');
+      document.getElementById('micBtn').textContent = '🎤';
+      document.getElementById('msgInput').placeholder = 'Say something to Gary...';
     };
 
     recognition.start();
   }
+
+  // ── FILE UPLOAD ──────────────────────────────────────────────────────────────
 
   let selectedFile = null;
 
@@ -586,7 +616,8 @@ HTML = """<!DOCTYPE html>
     const empty = document.getElementById('emptyState');
     if (empty) empty.remove();
 
-    appendMessage('user', msg);
+    const now = new Date().toISOString();
+    appendMessage('user', msg, now);
     showTyping();
 
     try {
@@ -599,11 +630,11 @@ HTML = """<!DOCTYPE html>
       hideTyping();
 
       if (data.error) {
-        appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*');
+        appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*', null);
         console.error('Gary error:', data.error, data.detail);
       } else {
         currentThreadId = data.thread_id;
-        appendMessage('gary', data.response);
+        appendMessage('gary', data.response, new Date().toISOString());
         if (data.audio) {
           const audio = document.getElementById('audioPlayer');
           audio.src = 'data:audio/mp3;base64,' + data.audio;
@@ -613,7 +644,7 @@ HTML = """<!DOCTYPE html>
       }
     } catch(e) {
       hideTyping();
-      appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*');
+      appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*', null);
     }
 
     isLoading = false;
@@ -633,7 +664,7 @@ HTML = """<!DOCTYPE html>
     if (empty) empty.remove();
 
     const displayMsg = caption ? `[${selectedFile.name}] ${caption}` : `[${selectedFile.name}]`;
-    appendMessage('user', displayMsg);
+    appendMessage('user', displayMsg, new Date().toISOString());
     showTyping();
 
     const formData = new FormData();
@@ -653,10 +684,10 @@ HTML = """<!DOCTYPE html>
       hideTyping();
 
       if (data.error) {
-        appendMessage('gary', `*Gary frowns at the file. ${data.error}*`);
+        appendMessage('gary', `*Gary frowns at the file. ${data.error}*`, null);
       } else {
         currentThreadId = data.thread_id;
-        appendMessage('gary', data.response);
+        appendMessage('gary', data.response, new Date().toISOString());
         if (data.audio) {
           const audio = document.getElementById('audioPlayer');
           audio.src = 'data:audio/mp3;base64,' + data.audio;
@@ -666,7 +697,7 @@ HTML = """<!DOCTYPE html>
       }
     } catch(e) {
       hideTyping();
-      appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*');
+      appendMessage('gary', '*Something went wrong. Gary appears to be indisposed.*', null);
     }
 
     isLoading = false;
