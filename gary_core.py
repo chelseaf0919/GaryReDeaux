@@ -495,6 +495,46 @@ class GaryCore:
 
         return gary_response
 
+    def chat_with_content(self, content_blocks: list, caption: str = ""):
+        """Chat with file/image content blocks (for uploads)."""
+        # Use caption or a generic prompt for memory retrieval
+        query = caption if caption else "image file upload"
+        memories = retrieve_memories(query)
+        system_prompt = build_system_prompt(memories)
+
+        # Build content: file blocks first, then optional caption
+        content = list(content_blocks)
+        if caption:
+            content.append({"type": "text", "text": caption})
+        else:
+            content.append({"type": "text", "text": "What do you make of this?"})
+
+        self.conversation_history.append({
+            "role": "user",
+            "content": content
+        })
+
+        response = self.client.messages.create(
+            model=MODEL,
+            max_tokens=1024,
+            system=system_prompt,
+            messages=self.conversation_history
+        )
+
+        gary_response = response.content[0].text
+
+        # Store as text only for history continuity
+        self.conversation_history[-1] = {
+            "role": "user",
+            "content": caption if caption else "[file upload]"
+        }
+        self.conversation_history.append({
+            "role": "assistant",
+            "content": gary_response
+        })
+
+        return gary_response
+
     def reset(self):
         self.conversation_history = []
 
