@@ -106,6 +106,13 @@ async def chat(request: Request):
         if not thread_id:
             thread_id = create_thread()
             gary.reset()
+        else:
+            # ALWAYS reload conversation history from Supabase on every request
+            # so Gary never goldfishes out after a reset/refresh/restart
+            prior_msgs = load_thread_messages(thread_id)
+            gary.conversation_history = [
+                {"role": m["role"], "content": m["content"]} for m in prior_msgs
+            ]
 
         msgs = load_thread_messages(thread_id)
         if len(msgs) == 0:
