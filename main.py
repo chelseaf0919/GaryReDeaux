@@ -147,57 +147,68 @@ SUPPORTED_TEXT_TYPES  = {"text/plain", "text/markdown", "text/csv", "application
 
 @app.post("/api/upload")
 async def upload_file(
-    file: UploadFile = File(...),
+    request: Request,
+    files: list[UploadFile] = File(...),
     message: str = Form(default=""),
     thread_id: str = Form(default=""),
     voice: str = Form(default="false"),
 ):
     try:
-        content_type = file.content_type or ""
-        raw = await file.read()
-
         content_blocks = []
 
-        if content_type in SUPPORTED_IMAGE_TYPES:
-            img_b64 = base64.standard_b64encode(raw).decode()
-            content_blocks.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": content_type, "data": img_b64},
-            })
-        elif content_type == "application/pdf":
-            pdf_b64 = base64.standard_b64encode(raw).decode()
-            content_blocks.append({
-                "type": "document",
-                "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64},
-            })
-        elif content_type in SUPPORTED_TEXT_TYPES or content_type.startswith("text/"):
-            text_content = raw.decode("utf-8", errors="replace")
-            filename = file.filename or "file"
-            content_blocks.append({
-                "type": "text",
-                "text": f"[File: {filename}]\n```\n{text_content}\n```",
-            })
-        else:
-            return JSONResponse(
-                {"error": f"Unsupported file type: {content_type}. Supported: images (jpg/png/gif/webp), PDF, and text files."},
-                status_code=400,
-            )
+        for file in files[:10]:  # max 10 files
+            content_type = file.content_type or ""
+            raw = await file.read()
+
+            if content_type in SUPPORTED_IMAGE_TYPES:
+                img_b64 = base64.standard_b64encode(raw).decode()
+                content_blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": content_type, "data": img_b64},
+                })
+            elif content_type == "application/pdf":
+                pdf_b64 = base64.standard_b64encode(raw).decode()
+                content_blocks.append({
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64},
+                })
+            elif content_type in SUPPORTED_TEXT_TYPES or content_type.startswith("text/"):
+                text_content = raw.decode("utf-8", errors="replace")
+                filename = file.filename or "file"
+                content_blocks.append({
+                    "type": "text",
+                    "text": f"[File: {filename}]\n```\n{text_content}\n```",
+                })
+            else:
+                content_blocks.append({
+                    "type": "text",
+                    "text": f"[Unsupported file: {file.filename} ({content_type})]",
+                })
+
+        if not content_blocks:
+            return JSONResponse({"error": "No supported files found."}, status_code=400)
 
         tid = int(thread_id) if thread_id.strip().isdigit() else None
         if not tid:
             tid = create_thread()
             gary.reset()
+        else:
+            prior_msgs = load_thread_messages(tid)
+            gary.conversation_history = [
+                {"role": m["role"], "content": m["content"]} for m in prior_msgs
+            ]
 
         msgs = load_thread_messages(tid)
         if len(msgs) == 0:
-            title_text = message.strip() or file.filename or "File upload"
+            title_text = message.strip() or (files[0].filename if files else "File upload")
             words = title_text.split()
             title = " ".join(words[:6]) + ("..." if len(words) > 6 else "")
             update_thread_title(tid, title)
 
         gary_response = gary.chat_with_content(content_blocks, message.strip())
 
-        display_user = f"[Uploaded: {file.filename}]"
+        file_names = ", ".join(f.filename for f in files[:10])
+        display_user = f"[Uploaded: {file_names}]"
         if message.strip():
             display_user += f" {message.strip()}"
         save_message(tid, "user", display_user)
@@ -372,13 +383,13 @@ HTML = """<!DOCTYPE html>
     </div>
     <div class="input-area">
       <button class="mic-btn" id="micBtn" onclick="toggleMic()" title="Voice input">🎤</button>
-      <button class="upload-btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()" title="Upload file">📎</button>
-      <input type="file" id="fileInput" style="display:none" accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.css,.js,.xml" onchange="handleFileSelect(event)">
+      <button class="upload-btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()" title="Upload files">📎</button>
+      <input type="file" id="fileInput" style="display:none" accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.css,.js,.xml" multiple onchange="handleFileSelect(event)">
       <div class="input-wrap">
         <div id="filePreview" style="display:none" class="file-preview">
           <span>📄</span>
           <span class="file-name" id="filePreviewName"></span>
-          <span class="remove-file" onclick="clearFile()" title="Remove file">✕</span>
+          <span class="remove-file" onclick="clearFile()" title="Remove files">✕</span>
         </div>
         <textarea id="msgInput" placeholder="Say something to Gary..." rows="1" onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
       </div>
@@ -586,19 +597,21 @@ HTML = """<!DOCTYPE html>
 
   // ── FILE UPLOAD ──────────────────────────────────────────────────────────────
 
-  let selectedFile = null;
+  let selectedFiles = [];
 
   function handleFileSelect(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-    selectedFile = file;
-    document.getElementById('filePreviewName').textContent = file.name;
+    const files = Array.from(event.target.files).slice(0, 10);
+    if (!files.length) return;
+    selectedFiles = files;
+    const names = files.map(f => f.name).join(', ');
+    document.getElementById('filePreviewName').textContent = 
+      files.length === 1 ? files[0].name : `${files.length} files: ${names}`;
     document.getElementById('filePreview').style.display = 'flex';
     document.getElementById('msgInput').placeholder = 'Add a message (optional)...';
   }
 
   function clearFile() {
-    selectedFile = null;
+    selectedFiles = [];
     document.getElementById('fileInput').value = '';
     document.getElementById('filePreview').style.display = 'none';
     document.getElementById('msgInput').placeholder = 'Say something to Gary...';
@@ -608,8 +621,8 @@ HTML = """<!DOCTYPE html>
     const input = document.getElementById('msgInput');
     const msg = messageOverride || input.value.trim();
 
-    if (selectedFile && !messageOverride) {
-      await sendWithFile(msg);
+    if (selectedFiles.length && !messageOverride) {
+      await sendWithFiles(msg);
       return;
     }
 
@@ -660,8 +673,8 @@ HTML = """<!DOCTYPE html>
     scrollToBottom();
   }
 
-  async function sendWithFile(caption) {
-    if (!selectedFile || isLoading) return;
+  async function sendWithFiles(caption) {
+    if (!selectedFiles.length || isLoading) return;
 
     isLoading = true;
     document.getElementById('sendBtn').disabled = true;
@@ -670,12 +683,15 @@ HTML = """<!DOCTYPE html>
     const empty = document.getElementById('emptyState');
     if (empty) empty.remove();
 
-    const displayMsg = caption ? `[${selectedFile.name}] ${caption}` : `[${selectedFile.name}]`;
+    const fileNames = selectedFiles.map(f => f.name).join(', ');
+    const displayMsg = caption
+      ? `[${selectedFiles.length > 1 ? selectedFiles.length + ' files' : selectedFiles[0].name}] ${caption}`
+      : `[${selectedFiles.length > 1 ? selectedFiles.length + ' files: ' + fileNames : selectedFiles[0].name}]`;
     appendMessage('user', displayMsg, new Date().toISOString());
     showTyping();
 
     const formData = new FormData();
-    formData.append('file', selectedFile);
+    selectedFiles.forEach(f => formData.append('files', f));
     formData.append('message', caption || '');
     formData.append('thread_id', currentThreadId || '');
     formData.append('voice', voiceEnabled ? 'true' : 'false');
@@ -691,7 +707,7 @@ HTML = """<!DOCTYPE html>
       hideTyping();
 
       if (data.error) {
-        appendMessage('gary', `*Gary frowns at the file. ${data.error}*`, null);
+        appendMessage('gary', `*Gary frowns at the files. ${data.error}*`, null);
       } else {
         currentThreadId = data.thread_id;
         appendMessage('gary', data.response, new Date().toISOString());
