@@ -52,6 +52,22 @@ async def get_threads():
 @app.post("/api/threads")
 async def new_thread():
     try:
+        # Embed the previous thread before starting a new one
+        from gary_core import embed_thread_async
+        if gary.conversation_history:
+            try:
+                sb = get_supabase()
+                recent = sb.table("threads")\
+                    .select("id, title")\
+                    .order("updated_at", desc=True)\
+                    .limit(1)\
+                    .execute()
+                if recent.data:
+                    prev = recent.data[0]
+                    embed_thread_async(prev["id"], prev["title"])
+            except Exception:
+                pass
+
         thread_id = create_thread()
         gary.reset()
         return JSONResponse({"id": thread_id, "title": "New Chat"})
@@ -61,6 +77,22 @@ async def new_thread():
 @app.get("/api/threads/{thread_id}/messages")
 async def get_messages(thread_id: int):
     try:
+        # Embed whatever thread we're leaving before loading the new one
+        from gary_core import embed_thread_async
+        if gary.conversation_history:
+            try:
+                sb = get_supabase()
+                recent = sb.table("threads")\
+                    .select("id, title")\
+                    .order("updated_at", desc=True)\
+                    .limit(1)\
+                    .execute()
+                if recent.data and recent.data[0]["id"] != thread_id:
+                    prev = recent.data[0]
+                    embed_thread_async(prev["id"], prev["title"])
+            except Exception:
+                pass
+
         messages = load_thread_messages(thread_id)
         gary.reset()
         gary.conversation_history = [{"role": m["role"], "content": m["content"]} for m in messages]

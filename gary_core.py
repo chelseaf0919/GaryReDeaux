@@ -7,7 +7,8 @@ sorted chronologically with timestamps.
 """
 
 import os
-import random
+import time
+import threading
 import voyageai
 from anthropic import Anthropic
 from supabase import create_client
@@ -17,7 +18,9 @@ from supabase import create_client
 MODEL           = "claude-opus-4-5"
 MAX_CHUNKS      = 6
 MAX_RECEIPTS    = 3
-MAX_SUMMARIES   = 3
+CHUNK_SIZE      = 8
+CHUNK_OVERLAP   = 3
+MIN_CHUNK_LEN   = 50
 
 # ── GARY'S IDENTITY ───────────────────────────────────────────────────────────
 
@@ -211,6 +214,118 @@ def get_embedding(text: str):
         return None
 
 
+def get_document_embedding(text: str):
+    """Generate a 1024-dim embedding for a document (for storage)."""
+    try:
+        text = text[:6000].strip()
+        if not text:
+            return None
+        vo = get_voyage()
+        result = vo.embed([text], model="voyage-3", input_type="document")
+        return result.embeddings[0]
+    except Exception as e:
+        print(f"⚠ Document embedding error: {e}")
+        return None
+
+
+# ── THREAD EMBEDDING ──────────────────────────────────────────────────────────
+
+def embed_thread_async(thread_id: int, thread_title: str):
+    """Embed a completed thread into memory_chunks in a background thread."""
+    t = threading.Thread(
+        target=_embed_thread_worker,
+        args=(thread_id, thread_title),
+        daemon=True
+    )
+    t.start()
+
+
+def _embed_thread_worker(thread_id: int, thread_title: str):
+    """Background worker that chunks and embeds a thread into memory_chunks."""
+    try:
+        sb = get_supabase()
+        convo_id = f"thread_{thread_id}"
+
+        # Check if already embedded
+        existing = sb.table("memory_chunks")\
+            .select("id")\
+            .eq("conversation_id", convo_id)\
+            .limit(1)\
+            .execute()
+        if existing.data:
+            print(f"ℹ Thread {thread_id} already embedded, skipping.")
+            return
+
+        # Load all messages for this thread
+        msgs = sb.table("thread_messages")\
+            .select("role, content, created_at")\
+            .eq("thread_id", thread_id)\
+            .order("id")\
+            .execute()
+
+        messages = msgs.data or []
+        if len(messages) < 2:
+            return  # not worth embedding very short threads
+
+        print(f"📝 Embedding thread {thread_id}: '{thread_title}' ({len(messages)} messages)")
+
+        # Format messages for chunking
+        formatted = []
+        for m in messages:
+            role_label = "Chelsea" if m["role"] == "user" else "Gary"
+            ts = f" ({m.get('created_at','')[:10]})" if m.get('created_at') else ""
+            formatted.append({
+                "role": m["role"],
+                "text": m["content"],
+                "timestamp": m.get("created_at", ""),
+                "label": f"{role_label}{ts}"
+            })
+
+        # Chunk with overlap
+        chunks = []
+        i = 0
+        while i < len(formatted):
+            chunk = formatted[i:i + CHUNK_SIZE]
+            chunks.append(chunk)
+            if i + CHUNK_SIZE >= len(formatted):
+                break
+            i += CHUNK_SIZE - CHUNK_OVERLAP
+
+        # Get conversation date from first message
+        convo_date = formatted[0].get("timestamp") or None
+
+        # Embed each chunk
+        for chunk_idx, chunk in enumerate(chunks):
+            lines = [f"[Conversation: {thread_title}]"]
+            for msg in chunk:
+                lines.append(f"{msg['label']}: {msg['text'][:800]}")
+            chunk_text = "\n".join(lines)
+
+            if len(chunk_text) < MIN_CHUNK_LEN:
+                continue
+
+            embedding = get_document_embedding(chunk_text)
+            if not embedding:
+                continue
+
+            sb.table("memory_chunks").insert({
+                "conversation_id": convo_id,
+                "conversation_title": thread_title,
+                "conversation_date": convo_date,
+                "chunk_index": chunk_idx,
+                "chunk_text": chunk_text[:4000],
+                "message_count": len(chunk),
+                "embedding": embedding,
+            }).execute()
+
+            time.sleep(0.15)
+
+        print(f"✓ Thread {thread_id} embedded ({len(chunks)} chunks)")
+
+    except Exception as e:
+        print(f"⚠ Thread embedding failed for {thread_id}: {e}")
+
+
 # ── MEMORY RETRIEVAL ──────────────────────────────────────────────────────────
 
 def get_profile_memory():
@@ -374,7 +489,6 @@ def build_system_prompt(memories):
         section = "\n\n## Relevant Memory — Past Conversations\n"
         section += "These are real past conversations retrieved because they relate to what Chelsea just said.\n"
         section += "They are in chronological order. Use them to inform your response.\n"
-        # Sort by date then chunk_index for chronological presentation
         chunks_sorted = sorted(chunks, key=lambda c: (
             c.get("conversation_date") or "",
             c.get("chunk_index") or 0
