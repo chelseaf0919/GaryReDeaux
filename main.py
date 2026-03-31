@@ -634,7 +634,7 @@ HTML = r"""<html lang="en">
       const res = await fetch('/api/generate-pdf', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, title: 'Gary RéDeaux' })
+        body: JSON.stringify({ content, title: 'Gary ReDeaux' })
       });
       if (!res.ok) throw new Error('PDF generation failed');
       const blob = await res.blob();
