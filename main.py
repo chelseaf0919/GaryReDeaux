@@ -176,6 +176,7 @@ async def chat(request: Request):
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 SUPPORTED_TEXT_TYPES  = {"text/plain", "text/markdown", "text/csv", "application/json",
                           "text/html", "text/css", "text/javascript", "application/xml"}
+SUPPORTED_DOCX_TYPES  = {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
 
 @app.post("/api/upload")
 async def upload_file(
@@ -211,11 +212,22 @@ async def upload_file(
                     "type": "text",
                     "text": f"[File: {filename}]\n```\n{text_content}\n```",
                 })
-            else:
-                content_blocks.append({
-                    "type": "text",
-                    "text": f"[Unsupported file: {file.filename} ({content_type})]",
-                })
+            elif content_type in SUPPORTED_DOCX_TYPES or file.filename.endswith('.docx'):
+                try:
+                    import io
+                    from docx import Document
+                    doc = Document(io.BytesIO(raw))
+                    text_content = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+                    filename = file.filename or "document.docx"
+                    content_blocks.append({
+                        "type": "text",
+                        "text": f"[Word Document: {filename}]\n{text_content}",
+                    })
+                except Exception as e:
+                    content_blocks.append({
+                        "type": "text",
+                        "text": f"[Could not read Word document: {file.filename} — {str(e)}]",
+                    })
 
         if not content_blocks:
             return JSONResponse({"error": "No supported files found."}, status_code=400)
@@ -261,7 +273,76 @@ async def upload_file(
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-HTML = """<!DOCTYPE html>
+@app.post("/api/generate-pdf")
+async def generate_pdf(request: Request):
+    """Generate a downloadable PDF from Gary's last response."""
+    try:
+        import io
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        from reportlab.lib.enums import TA_LEFT
+        from fastapi.responses import StreamingResponse
+
+        body = await request.json()
+        content = body.get("content", "").strip()
+        title = body.get("title", "Gary RéDeaux")
+
+        if not content:
+            return JSONResponse({"error": "No content provided"}, status_code=400)
+
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=letter,
+            rightMargin=inch,
+            leftMargin=inch,
+            topMargin=inch,
+            bottomMargin=inch,
+        )
+
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            "GaryTitle",
+            parent=styles["Heading1"],
+            fontSize=18,
+            spaceAfter=12,
+        )
+        body_style = ParagraphStyle(
+            "GaryBody",
+            parent=styles["Normal"],
+            fontSize=11,
+            leading=16,
+            spaceAfter=8,
+        )
+
+        story = []
+        story.append(Paragraph(title, title_style))
+        story.append(Spacer(1, 0.2 * inch))
+
+        # Split content into paragraphs
+        for para in content.split("\n"):
+            para = para.strip()
+            if para:
+                # Escape XML special chars for reportlab
+                para = para.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                story.append(Paragraph(para, body_style))
+            else:
+                story.append(Spacer(1, 0.1 * inch))
+
+        doc.build(story)
+        buffer.seek(0)
+
+        filename = title.replace(" ", "_")[:40] + ".pdf"
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -313,7 +394,8 @@ HTML = """<!DOCTYPE html>
   .message.user .bubble { background: var(--user-bg); border: 1px solid var(--border); border-top-right-radius: 2px; }
   .message.gary .bubble { background: var(--gary-bg); border: 1px solid var(--border); border-top-left-radius: 2px; }
   .message.gary .bubble em { color: var(--muted); font-style: italic; }
-  .timestamp { font-size: 0.65rem; color: var(--muted); margin-top: 0.25rem; padding: 0 0.25rem; }
+  .download-btn { display: inline-flex; align-items: center; gap: 0.3rem; margin-top: 0.5rem; padding: 0.3rem 0.7rem; background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); font-family: 'DM Mono', monospace; font-size: 0.7rem; cursor: pointer; transition: all 0.2s; }
+  .download-btn:hover { border-color: var(--accent2); color: var(--accent2); }
   .message.user .timestamp { text-align: right; }
   .message.gary .timestamp { text-align: left; }
   .typing { display: flex; gap: 4px; padding: 0.75rem 1rem; background: var(--gary-bg); border: 1px solid var(--border); border-radius: 10px; border-top-left-radius: 2px; width: fit-content; }
@@ -416,7 +498,7 @@ HTML = """<!DOCTYPE html>
     <div class="input-area">
       <button class="mic-btn" id="micBtn" onclick="toggleMic()" title="Voice input">🎤</button>
       <button class="upload-btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()" title="Upload files">📎</button>
-      <input type="file" id="fileInput" style="display:none" accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.css,.js,.xml" multiple onchange="handleFileSelect(event)">
+      <input type="file" id="fileInput" style="display:none" accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.css,.js,.xml,.docx" multiple onchange="handleFileSelect(event)">
       <div class="input-wrap">
         <div id="filePreview" style="display:none" class="file-preview">
           <span>📄</span>
@@ -533,10 +615,38 @@ HTML = """<!DOCTYPE html>
       ts.textContent = formatTimestamp(timestamp);
       msgWrap.appendChild(ts);
     }
+    // Add PDF download button to Gary's messages
+    if (role !== 'user') {
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'download-btn';
+      dlBtn.innerHTML = '⬇ Save as PDF';
+      dlBtn.onclick = () => downloadPDF(content);
+      msgWrap.appendChild(dlBtn);
+    }
     div.appendChild(avatar);
     div.appendChild(msgWrap);
     container.appendChild(div);
     scrollToBottom();
+  }
+
+  async function downloadPDF(content) {
+    try {
+      const res = await fetch('/api/generate-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, title: 'Gary RéDeaux' })
+      });
+      if (!res.ok) throw new Error('PDF generation failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'gary_redeaux.pdf';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch(e) {
+      console.error('PDF error:', e);
+    }
   }
 
   function showTyping() {

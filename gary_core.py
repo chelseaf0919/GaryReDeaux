@@ -15,7 +15,7 @@ from supabase import create_client
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 
-MODEL           = "claude-opus-4-5"
+MODEL           = "claude-sonnet-4-5"
 MAX_CHUNKS      = 6
 MAX_RECEIPTS    = 3
 CHUNK_SIZE      = 8
