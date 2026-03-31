@@ -343,7 +343,7 @@ async def generate_pdf(request: Request):
 
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-<html lang="en">
+HTML = r"""<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
