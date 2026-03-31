@@ -555,7 +555,7 @@ async def generate_pdf(request: Request):
       const threads = await res.json();
       ['threadsList', 'threadsListMobile'].forEach(id => {
         const list = document.getElementById(id);
-        list.innerHTML = '';
+        list.innerHTML = r'';
         threads.forEach(t => {
           const div = document.createElement('div');
           div.className = 'thread-item' + (t.id === currentThreadId ? ' active' : '');
