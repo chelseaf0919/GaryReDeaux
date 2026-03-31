@@ -619,7 +619,7 @@ HTML = r"""<html lang="en">
     if (role !== 'user') {
       const dlBtn = document.createElement('button');
       dlBtn.className = 'download-btn';
-      dlBtn.innerHTML = '⬇ Save as PDF';
+      dlBtn.innerHTML = 'Save as PDF';
       dlBtn.onclick = () => downloadPDF(content);
       msgWrap.appendChild(dlBtn);
     }
