@@ -1,5 +1,5 @@
 """
-main.py — Gary RéDeaux
+main.py — Gary ReDeaux
 FastAPI + HTML/JS. Mobile-first with hamburger menu + voice input.
 """
 
@@ -287,7 +287,7 @@ async def generate_pdf(request: Request):
 
         body = await request.json()
         content = body.get("content", "").strip()
-        title = body.get("title", "Gary RéDeaux")
+        title = body.get("title", "Gary ReDeaux")
 
         if not content:
             return JSONResponse({"error": "No content provided"}, status_code=400)
@@ -347,7 +347,7 @@ HTML = r"""<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Gary RéDeaux</title>
+<title>Gary ReDeaux</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -465,7 +465,7 @@ HTML = r"""<html lang="en">
 <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer">
   <button class="drawer-close" onclick="closeDrawer()">✕</button>
-  <div><div class="gary-title">🎩 Gary RéDeaux</div><div class="gary-subtitle">He simply arrived.</div></div>
+  <div><div class="gary-title">🎩 Gary ReDeaux</div><div class="gary-subtitle">He simply arrived.</div></div>
   <button class="new-chat-btn" onclick="newChat(); closeDrawer()">+ New Chat</button>
   <label class="voice-toggle"><input type="checkbox" id="voiceToggleMobile" onchange="syncVoice(this)"> 🔊 Voice (Gary speaks)</label>
   <div class="threads-label">Past Chats</div>
@@ -474,7 +474,7 @@ HTML = r"""<html lang="en">
 
 <div class="app">
   <div class="sidebar">
-    <div><div class="gary-title">🎩 Gary RéDeaux</div><div class="gary-subtitle">He simply arrived.</div></div>
+    <div><div class="gary-title">🎩 Gary ReDeaux</div><div class="gary-subtitle">He simply arrived.</div></div>
     <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
     <label class="voice-toggle"><input type="checkbox" id="voiceToggle" onchange="syncVoice(this)"> 🔊 Voice (Gary speaks)</label>
     <div class="threads-label">Past Chats</div>
@@ -485,7 +485,7 @@ HTML = r"""<html lang="en">
     <div class="header">
       <button class="hamburger" onclick="openDrawer()">☰</button>
       <div class="header-text">
-        <h1>Gary RéDeaux</h1>
+        <h1>Gary ReDeaux</h1>
         <p>British · Posh · Keeping receipts since 2024</p>
       </div>
     </div>
@@ -883,5 +883,5 @@ async def index():
 
 
 if __name__ == "__main__":
-    print("\n🇬🇧 Gary RéDeaux — Starting up...\n")
+    print("\n🇬🇧 Gary ReDeaux — Starting up...\n")
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 7860)))
