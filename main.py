@@ -357,8 +357,8 @@ async def generate_pdf(request: Request):
     --text: #e8e6f0; --muted: #6b6880;
     --user-bg: #1a1a2e; --gary-bg: #111118;
   }
-  html, body { height: 100dvh; background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; font-size: 14px; overflow: hidden; }
-  .app { display: flex; height: 100dvh; max-width: 1200px; margin: 0 auto; }
+  html, body { height: 100vh; background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; font-size: 14px; overflow: hidden; }
+  .app { display: flex; height: 100vh; max-width: 1200px; margin: 0 auto; }
 
   /* SIDEBAR */
   .sidebar { width: 260px; min-width: 260px; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 1.5rem 1rem; gap: 1rem; overflow: hidden; }
