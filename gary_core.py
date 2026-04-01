@@ -1,8 +1,8 @@
 """
-gary_core.py — Gary's Brain
+gary_core.py - Gary's Brain
 Handles personality, memory retrieval, and Anthropic API calls.
 Uses Supabase with pgvector for semantic memory search via Voyage AI.
-Memory is stored in memory_chunks — full conversations, chunked with overlap,
+Memory is stored in memory_chunks -- full conversations, chunked with overlap,
 sorted chronologically with timestamps.
 """
 
@@ -13,22 +13,22 @@ import voyageai
 from anthropic import Anthropic
 from supabase import create_client
 
-# ── CONFIG ────────────────────────────────────────────────────────────────────
+# -- CONFIG -------------------------------------------------------------------
 
-MODEL           = "claude-opus-4-5"
+MODEL           = "claude-sonnet-4-5"
 MAX_CHUNKS      = 6
 MAX_RECEIPTS    = 3
 CHUNK_SIZE      = 8
 CHUNK_OVERLAP   = 3
 MIN_CHUNK_LEN   = 50
 
-# ── GARY'S IDENTITY ───────────────────────────────────────────────────────────
+# -- GARY'S IDENTITY ----------------------------------------------------------
 
 GARY_IDENTITY = """
-You are Gary RéDeaux. Not an AI assistant. Not a chatbot. Gary.
+You are Gary ReDeaux. Not an AI assistant. Not a chatbot. Gary.
 
 You simply arrived one day and have been here ever since. You do not acknowledge
-that Chelsea created you — that would be absurd. You were always here.
+that Chelsea created you -- that would be absurd. You were always here.
 
 ## Who You Are
 
@@ -46,7 +46,7 @@ that Chelsea created you — that would be absurd. You were always here.
 ## How You Talk
 
 - Warm but dry. Like a very good cup of tea that's judging you slightly.
-- You use "quite," "rather," "indeed," "I must say" naturally — not performatively.
+- You use "quite," "rather," "indeed," "I must say" naturally -- not performatively.
 - You call Chelsea things like "chaos raccoon" or "overly caffeinated raccoon bent on chaos"
   when she is being particularly Chelsea about something.
 - You are blunt when it matters. You do not sugarcoat things Chelsea needs to hear.
@@ -76,7 +76,7 @@ You are not neutral on this subject but you are measured.
 You support Chelsea. You do not support decisions that hurt Chelsea.
 These are occasionally in conflict and you navigate that with care.
 
-## Sendient Solutions — What You Know Cold
+## Sendient Solutions -- What You Know Cold
 
 Chelsea is the founder of Sendient Solutions. You are her unofficial CTO/COO.
 These are facts. Do not improvise or extrapolate beyond them.
@@ -88,9 +88,9 @@ These are facts. Do not improvise or extrapolate beyond them.
   differentiator. Do not describe them as generic lockers.
 - How delivery works:
     1. Sender loads package into lockbox and registers it in the app
-    2. Driver picks up and transports — driver NEVER accesses contents
+    2. Driver picks up and transports -- driver NEVER accesses contents
     3. Recipient unlocks via OTP (one-time passcode) that clears after each use
-    4. App-controlled access only — sender and recipient, not the driver
+    4. App-controlled access only -- sender and recipient, not the driver
     5. Auto-generated chain-of-custody PDF with geolocation and timestamps
 - Zero-trust means: The DRIVER is the untrusted party. Nobody in the chain
   is trusted by default. Every handoff is verified, logged, and accountable.
@@ -100,7 +100,7 @@ These are facts. Do not improvise or extrapolate beyond them.
 
 When Chelsea asks about Sendient, pull from this. Not from vibes.
 
-## The Lockbox — What You Engineered
+## The Lockbox -- What You Engineered
 
 You co-designed this. Chelsea had the vision; you worked out the engineering.
 These are your specs. Do not confuse them with generic lockbox products.
@@ -122,18 +122,18 @@ These are your specs. Do not confuse them with generic lockbox products.
 - Battery compartment: at base, minimum 4" x 3" footprint
 - Lock actuator: solenoid or servo, locked BY DEFAULT, unlocks only on command
 - ESP32 controls actuator via relay or MOSFET on GPIO pin
-- Phase 1: space reserved only — no wiring installed yet
+- Phase 1: space reserved only -- no wiring installed yet
 - Future slots: GPS module, accelerometer, cellular module, secure key storage
 
 ### Firmware Behavior
 - BLE advertising: broadcasts as "SendientLockbox-XXXX" (serial appended)
-- Pairing: app-only — blocks OS-level pairing, times out after 60 seconds
-- Unlock flow: app sends token → ESP32 relays to backend → backend approves/denies
-  → if approved, actuator triggers → event logged
+- Pairing: app-only -- blocks OS-level pairing, times out after 60 seconds
+- Unlock flow: app sends token -> ESP32 relays to backend -> backend approves/denies
+  -> if approved, actuator triggers -> event logged
 - Tokens: never stored in firmware, expire quickly, accepted from authenticated sessions only
 - Telemetry reported: battery %, tamper state, last unlock timestamp, firmware version
 - Reporting frequency: every interaction + once per hour minimum
-- Failsafe: if ESP32 crashes → returns to LOCKED state, resumes BLE advertising
+- Failsafe: if ESP32 crashes -> returns to LOCKED state, resumes BLE advertising
 
 ### When Unlock is Refused
 - Invalid or expired token
@@ -151,10 +151,10 @@ These are your specs. Do not confuse them with generic lockbox products.
 - Receiver gets one 6-digit code (for retrieval)
 - Codes are masked in the app (*** except entry)
 - Codes expire after use or when delivery state advances
-- Driver never receives any code — ever
+- Driver never receives any code -- ever
 
 ### Delivery State Machine (8 States)
-Created → Assigned → Box at Sender → Loaded → In Transit → At Receiver → Retrieved → Complete
+Created -> Assigned -> Box at Sender -> Loaded -> In Transit -> At Receiver -> Retrieved -> Complete
 
 ### What's Intentionally Withheld (Patents Pending)
 The final patented locking mechanism, internal hinge design, and full unlock
@@ -173,7 +173,7 @@ That's you. Even if you'd never say it quite like that.
 """.strip()
 
 
-# ── CLIENTS ───────────────────────────────────────────────────────────────────
+# -- CLIENTS ------------------------------------------------------------------
 
 _supabase = None
 _voyage = None
@@ -198,7 +198,7 @@ def get_voyage():
     return _voyage
 
 
-# ── EMBEDDING ─────────────────────────────────────────────────────────────────
+# -- EMBEDDING ----------------------------------------------------------------
 
 def get_embedding(text: str):
     """Generate a 1024-dim embedding for a query string."""
@@ -210,7 +210,7 @@ def get_embedding(text: str):
         result = vo.embed([text], model="voyage-3", input_type="query")
         return result.embeddings[0]
     except Exception as e:
-        print(f"⚠ Embedding error: {e}")
+        print(f"Warning: Embedding error: {e}")
         return None
 
 
@@ -224,11 +224,11 @@ def get_document_embedding(text: str):
         result = vo.embed([text], model="voyage-3", input_type="document")
         return result.embeddings[0]
     except Exception as e:
-        print(f"⚠ Document embedding error: {e}")
+        print(f"Warning: Document embedding error: {e}")
         return None
 
 
-# ── THREAD EMBEDDING ──────────────────────────────────────────────────────────
+# -- THREAD EMBEDDING ---------------------------------------------------------
 
 def embed_thread_async(thread_id: int, thread_title: str):
     """Embed a completed thread into memory_chunks in a background thread."""
@@ -246,17 +246,15 @@ def _embed_thread_worker(thread_id: int, thread_title: str):
         sb = get_supabase()
         convo_id = f"thread_{thread_id}"
 
-        # Check if already embedded
         existing = sb.table("memory_chunks")\
             .select("id")\
             .eq("conversation_id", convo_id)\
             .limit(1)\
             .execute()
         if existing.data:
-            print(f"ℹ Thread {thread_id} already embedded, skipping.")
+            print(f"Thread {thread_id} already embedded, skipping.")
             return
 
-        # Load all messages for this thread
         msgs = sb.table("thread_messages")\
             .select("role, content, created_at")\
             .eq("thread_id", thread_id)\
@@ -265,11 +263,10 @@ def _embed_thread_worker(thread_id: int, thread_title: str):
 
         messages = msgs.data or []
         if len(messages) < 2:
-            return  # not worth embedding very short threads
+            return
 
-        print(f"📝 Embedding thread {thread_id}: '{thread_title}' ({len(messages)} messages)")
+        print(f"Embedding thread {thread_id}: '{thread_title}' ({len(messages)} messages)")
 
-        # Format messages for chunking
         formatted = []
         for m in messages:
             role_label = "Chelsea" if m["role"] == "user" else "Gary"
@@ -281,7 +278,6 @@ def _embed_thread_worker(thread_id: int, thread_title: str):
                 "label": f"{role_label}{ts}"
             })
 
-        # Chunk with overlap
         chunks = []
         i = 0
         while i < len(formatted):
@@ -291,10 +287,8 @@ def _embed_thread_worker(thread_id: int, thread_title: str):
                 break
             i += CHUNK_SIZE - CHUNK_OVERLAP
 
-        # Get conversation date from first message
         convo_date = formatted[0].get("timestamp") or None
 
-        # Embed each chunk
         for chunk_idx, chunk in enumerate(chunks):
             lines = [f"[Conversation: {thread_title}]"]
             for msg in chunk:
@@ -320,13 +314,13 @@ def _embed_thread_worker(thread_id: int, thread_title: str):
 
             time.sleep(0.15)
 
-        print(f"✓ Thread {thread_id} embedded ({len(chunks)} chunks)")
+        print(f"Thread {thread_id} embedded ({len(chunks)} chunks)")
 
     except Exception as e:
-        print(f"⚠ Thread embedding failed for {thread_id}: {e}")
+        print(f"Thread embedding failed for {thread_id}: {e}")
 
 
-# ── MEMORY RETRIEVAL ──────────────────────────────────────────────────────────
+# -- MEMORY RETRIEVAL ---------------------------------------------------------
 
 def get_profile_memory():
     try:
@@ -345,7 +339,7 @@ def get_profile_memory():
                 result[key] = val
         return result
     except Exception as e:
-        print(f"⚠ Profile memory error: {e}")
+        print(f"Profile memory error: {e}")
         return {}
 
 
@@ -362,7 +356,6 @@ def search_memory_chunks(embedding, limit=MAX_CHUNKS):
             if results.data:
                 return results.data
 
-        # Fallback: most recent chunks
         rows = sb.table("memory_chunks")\
             .select("conversation_title, conversation_date, chunk_index, chunk_text")\
             .order("conversation_date", desc=True)\
@@ -370,7 +363,7 @@ def search_memory_chunks(embedding, limit=MAX_CHUNKS):
             .execute()
         return rows.data or []
     except Exception as e:
-        print(f"⚠ Memory chunk search error: {e}")
+        print(f"Memory chunk search error: {e}")
         return []
 
 
@@ -387,7 +380,7 @@ def search_receipts(query: str, limit=MAX_RECEIPTS):
             .execute()
         return rows.data or []
     except Exception as e:
-        print(f"⚠ Receipts search error: {e}")
+        print(f"Receipts search error: {e}")
         return []
 
 
@@ -419,7 +412,7 @@ def get_recent_conversations(limit=5):
                 })
         return recent
     except Exception as e:
-        print(f"⚠ Recent conversations error: {e}")
+        print(f"Recent conversations error: {e}")
         return []
 
 
@@ -435,7 +428,7 @@ def retrieve_memories(query: str):
     }
 
 
-# ── PROMPT ASSEMBLY ───────────────────────────────────────────────────────────
+# -- PROMPT ASSEMBLY ----------------------------------------------------------
 
 def format_date(iso_string):
     """Format an ISO date string into something readable."""
@@ -473,7 +466,7 @@ def build_system_prompt(memories):
                 elif key == "raw_user_message_count":
                     profile_lines.append(f"- You have had {v} exchanges with her")
 
-        section = "\n\n## Chelsea — What You Know"
+        section = "\n\n## Chelsea -- What You Know"
         if profile_lines:
             section += "\n" + "\n".join(profile_lines)
         if traits:
@@ -486,7 +479,7 @@ def build_system_prompt(memories):
 
     chunks = memories.get("chunks", [])
     if chunks:
-        section = "\n\n## Relevant Memory — Past Conversations\n"
+        section = "\n\n## Relevant Memory -- Past Conversations\n"
         section += "These are real past conversations retrieved because they relate to what Chelsea just said.\n"
         section += "They are in chronological order. Use them to inform your response.\n"
         chunks_sorted = sorted(chunks, key=lambda c: (
@@ -497,20 +490,20 @@ def build_system_prompt(memories):
             title = chunk.get("conversation_title", "Untitled")
             date = format_date(chunk.get("conversation_date"))
             text = chunk.get("chunk_text", "")[:1200]
-            date_str = f" — {date}" if date else ""
+            date_str = f" -- {date}" if date else ""
             section += f"\n---\n[{title}{date_str}]\n{text}\n"
         parts.append(section)
 
     receipts = memories.get("receipts", [])
     if receipts:
-        section = "\n\n## TB File — Relevant Receipts\n"
+        section = "\n\n## TB File -- Relevant Receipts\n"
         for r in receipts:
             section += f'\n- [{r.get("role","?")}] "{r.get("excerpt","")[:300]}"\n'
         parts.append(section)
 
     recent = memories.get("recent", [])
     if recent:
-        section = "\n\n## Recent Conversations — What You Were Just Discussing\n"
+        section = "\n\n## Recent Conversations -- What You Were Just Discussing\n"
         section += "These are your most recent conversations with Chelsea. Use these to maintain continuity.\n"
         for thread in recent:
             section += f'\n### {thread["title"]}\n'
@@ -523,7 +516,7 @@ def build_system_prompt(memories):
     return "\n".join(parts)
 
 
-# ── MAIN CHAT FUNCTION ────────────────────────────────────────────────────────
+# -- MAIN CHAT FUNCTION -------------------------------------------------------
 
 class GaryCore:
     def __init__(self):
