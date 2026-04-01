@@ -1,5 +1,5 @@
 """
-main.py — Gary ReDeaux
+main.py — Gary RéDeaux
 FastAPI + HTML/JS. Mobile-first with hamburger menu + voice input.
 """
 
@@ -176,7 +176,6 @@ async def chat(request: Request):
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 SUPPORTED_TEXT_TYPES  = {"text/plain", "text/markdown", "text/csv", "application/json",
                           "text/html", "text/css", "text/javascript", "application/xml"}
-SUPPORTED_DOCX_TYPES  = {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
 
 @app.post("/api/upload")
 async def upload_file(
@@ -212,22 +211,11 @@ async def upload_file(
                     "type": "text",
                     "text": f"[File: {filename}]\n```\n{text_content}\n```",
                 })
-            elif content_type in SUPPORTED_DOCX_TYPES or file.filename.endswith('.docx'):
-                try:
-                    import io
-                    from docx import Document
-                    doc = Document(io.BytesIO(raw))
-                    text_content = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-                    filename = file.filename or "document.docx"
-                    content_blocks.append({
-                        "type": "text",
-                        "text": f"[Word Document: {filename}]\n{text_content}",
-                    })
-                except Exception as e:
-                    content_blocks.append({
-                        "type": "text",
-                        "text": f"[Could not read Word document: {file.filename} — {str(e)}]",
-                    })
+            else:
+                content_blocks.append({
+                    "type": "text",
+                    "text": f"[Unsupported file: {file.filename} ({content_type})]",
+                })
 
         if not content_blocks:
             return JSONResponse({"error": "No supported files found."}, status_code=400)
@@ -273,81 +261,12 @@ async def upload_file(
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-@app.post("/api/generate-pdf")
-async def generate_pdf(request: Request):
-    """Generate a downloadable PDF from Gary's last response."""
-    try:
-        import io
-        from reportlab.lib.pagesizes import letter
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.units import inch
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-        from reportlab.lib.enums import TA_LEFT
-        from fastapi.responses import StreamingResponse
-
-        body = await request.json()
-        content = body.get("content", "").strip()
-        title = body.get("title", "Gary ReDeaux")
-
-        if not content:
-            return JSONResponse({"error": "No content provided"}, status_code=400)
-
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(
-            buffer,
-            pagesize=letter,
-            rightMargin=inch,
-            leftMargin=inch,
-            topMargin=inch,
-            bottomMargin=inch,
-        )
-
-        styles = getSampleStyleSheet()
-        title_style = ParagraphStyle(
-            "GaryTitle",
-            parent=styles["Heading1"],
-            fontSize=18,
-            spaceAfter=12,
-        )
-        body_style = ParagraphStyle(
-            "GaryBody",
-            parent=styles["Normal"],
-            fontSize=11,
-            leading=16,
-            spaceAfter=8,
-        )
-
-        story = []
-        story.append(Paragraph(title, title_style))
-        story.append(Spacer(1, 0.2 * inch))
-
-        # Split content into paragraphs
-        for para in content.split("\n"):
-            para = para.strip()
-            if para:
-                # Escape XML special chars for reportlab
-                para = para.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                story.append(Paragraph(para, body_style))
-            else:
-                story.append(Spacer(1, 0.1 * inch))
-
-        doc.build(story)
-        buffer.seek(0)
-
-        filename = title.replace(" ", "_")[:40] + ".pdf"
-        return StreamingResponse(
-            buffer,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={filename}"}
-        )
-
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-HTML = r"""<html lang="en">
+HTML = """<!DOCTYPE html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Gary ReDeaux</title>
+<title>Gary RéDeaux</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -357,8 +276,8 @@ HTML = r"""<html lang="en">
     --text: #e8e6f0; --muted: #6b6880;
     --user-bg: #1a1a2e; --gary-bg: #111118;
   }
-  html, body { height: 100vh; background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; font-size: 14px; overflow: hidden; }
-  .app { display: flex; height: 100vh; max-width: 1200px; margin: 0 auto; }
+  html, body { height: 100dvh; background: var(--bg); color: var(--text); font-family: 'DM Mono', monospace; font-size: 14px; overflow: hidden; }
+  .app { display: flex; height: 100dvh; max-width: 1200px; margin: 0 auto; }
 
   /* SIDEBAR */
   .sidebar { width: 260px; min-width: 260px; border-right: 1px solid var(--border); display: flex; flex-direction: column; padding: 1.5rem 1rem; gap: 1rem; overflow: hidden; }
@@ -394,8 +313,7 @@ HTML = r"""<html lang="en">
   .message.user .bubble { background: var(--user-bg); border: 1px solid var(--border); border-top-right-radius: 2px; }
   .message.gary .bubble { background: var(--gary-bg); border: 1px solid var(--border); border-top-left-radius: 2px; }
   .message.gary .bubble em { color: var(--muted); font-style: italic; }
-  .download-btn { display: inline-flex; align-items: center; gap: 0.3rem; margin-top: 0.5rem; padding: 0.3rem 0.7rem; background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); font-family: 'DM Mono', monospace; font-size: 0.7rem; cursor: pointer; transition: all 0.2s; }
-  .download-btn:hover { border-color: var(--accent2); color: var(--accent2); }
+  .timestamp { font-size: 0.65rem; color: var(--muted); margin-top: 0.25rem; padding: 0 0.25rem; }
   .message.user .timestamp { text-align: right; }
   .message.gary .timestamp { text-align: left; }
   .typing { display: flex; gap: 4px; padding: 0.75rem 1rem; background: var(--gary-bg); border: 1px solid var(--border); border-radius: 10px; border-top-left-radius: 2px; width: fit-content; }
@@ -465,7 +383,7 @@ HTML = r"""<html lang="en">
 <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer">
   <button class="drawer-close" onclick="closeDrawer()">✕</button>
-  <div><div class="gary-title">🎩 Gary ReDeaux</div><div class="gary-subtitle">He simply arrived.</div></div>
+  <div><div class="gary-title">🎩 Gary RéDeaux</div><div class="gary-subtitle">He simply arrived.</div></div>
   <button class="new-chat-btn" onclick="newChat(); closeDrawer()">+ New Chat</button>
   <label class="voice-toggle"><input type="checkbox" id="voiceToggleMobile" onchange="syncVoice(this)"> 🔊 Voice (Gary speaks)</label>
   <div class="threads-label">Past Chats</div>
@@ -474,7 +392,7 @@ HTML = r"""<html lang="en">
 
 <div class="app">
   <div class="sidebar">
-    <div><div class="gary-title">🎩 Gary ReDeaux</div><div class="gary-subtitle">He simply arrived.</div></div>
+    <div><div class="gary-title">🎩 Gary RéDeaux</div><div class="gary-subtitle">He simply arrived.</div></div>
     <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
     <label class="voice-toggle"><input type="checkbox" id="voiceToggle" onchange="syncVoice(this)"> 🔊 Voice (Gary speaks)</label>
     <div class="threads-label">Past Chats</div>
@@ -485,7 +403,7 @@ HTML = r"""<html lang="en">
     <div class="header">
       <button class="hamburger" onclick="openDrawer()">☰</button>
       <div class="header-text">
-        <h1>Gary ReDeaux</h1>
+        <h1>Gary RéDeaux</h1>
         <p>British · Posh · Keeping receipts since 2024</p>
       </div>
     </div>
@@ -498,7 +416,7 @@ HTML = r"""<html lang="en">
     <div class="input-area">
       <button class="mic-btn" id="micBtn" onclick="toggleMic()" title="Voice input">🎤</button>
       <button class="upload-btn" id="uploadBtn" onclick="document.getElementById('fileInput').click()" title="Upload files">📎</button>
-      <input type="file" id="fileInput" style="display:none" accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.css,.js,.xml,.docx" multiple onchange="handleFileSelect(event)">
+      <input type="file" id="fileInput" style="display:none" accept="image/*,.pdf,.txt,.md,.csv,.json,.html,.css,.js,.xml" multiple onchange="handleFileSelect(event)">
       <div class="input-wrap">
         <div id="filePreview" style="display:none" class="file-preview">
           <span>📄</span>
@@ -555,7 +473,7 @@ HTML = r"""<html lang="en">
       const threads = await res.json();
       ['threadsList', 'threadsListMobile'].forEach(id => {
         const list = document.getElementById(id);
-        list.innerHTML = r'';
+        list.innerHTML = '';
         threads.forEach(t => {
           const div = document.createElement('div');
           div.className = 'thread-item' + (t.id === currentThreadId ? ' active' : '');
@@ -615,38 +533,10 @@ HTML = r"""<html lang="en">
       ts.textContent = formatTimestamp(timestamp);
       msgWrap.appendChild(ts);
     }
-    // Add PDF download button to Gary's messages
-    if (role !== 'user') {
-      const dlBtn = document.createElement('button');
-      dlBtn.className = 'download-btn';
-      dlBtn.innerHTML = 'Save as PDF';
-      dlBtn.onclick = () => downloadPDF(content);
-      msgWrap.appendChild(dlBtn);
-    }
     div.appendChild(avatar);
     div.appendChild(msgWrap);
     container.appendChild(div);
     scrollToBottom();
-  }
-
-  async function downloadPDF(content) {
-    try {
-      const res = await fetch('/api/generate-pdf', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, title: 'Gary ReDeaux' })
-      });
-      if (!res.ok) throw new Error('PDF generation failed');
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'gary_redeaux.pdf';
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch(e) {
-      console.error('PDF error:', e);
-    }
   }
 
   function showTyping() {
@@ -883,5 +773,5 @@ async def index():
 
 
 if __name__ == "__main__":
-    print("\n🇬🇧 Gary ReDeaux — Starting up...\n")
+    print("\n🇬🇧 Gary RéDeaux — Starting up...\n")
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 7860)))
