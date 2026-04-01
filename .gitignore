@@ -6,7 +6,7 @@ gary_memory.db
 gary_chroma/
 
 # Chat exports (too large + personal)
-*.html
+chat.html
 
 # Python
 __pycache__/
