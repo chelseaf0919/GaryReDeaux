@@ -6,3 +6,5 @@ elevenlabs
 supabase
 python-multipart
 voyageai
+python-docx
+reportlab
