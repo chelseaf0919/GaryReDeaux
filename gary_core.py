@@ -22,6 +22,13 @@ CHUNK_SIZE      = 8
 CHUNK_OVERLAP   = 3
 MIN_CHUNK_LEN   = 50
 
+# -- WEB SEARCH TOOL ----------------------------------------------------------
+
+WEB_SEARCH_TOOL = {
+    "type": "web_search_20250305",
+    "name": "web_search",
+}
+
 # -- GARY'S IDENTITY ----------------------------------------------------------
 
 GARY_IDENTITY = """
@@ -529,6 +536,17 @@ def build_system_prompt(memories):
     return "\n".join(parts)
 
 
+# -- RESPONSE EXTRACTION ------------------------------------------------------
+
+def extract_text_from_response(response):
+    """Extract final text from a response that may include tool use blocks."""
+    text_parts = []
+    for block in response.content:
+        if hasattr(block, "type") and block.type == "text":
+            text_parts.append(block.text)
+    return "".join(text_parts)
+
+
 # -- MAIN CHAT FUNCTION -------------------------------------------------------
 
 class GaryCore:
@@ -545,14 +563,44 @@ class GaryCore:
             "content": user_message
         })
 
-        response = self.client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            system=system_prompt,
-            messages=self.conversation_history
-        )
+        # Loop until Gary finishes (he may search before responding)
+        messages = list(self.conversation_history)
+        while True:
+            response = self.client.messages.create(
+                model=MODEL,
+                max_tokens=1024,
+                system=system_prompt,
+                tools=[WEB_SEARCH_TOOL],
+                messages=messages
+            )
 
-        gary_response = response.content[0].text
+            if response.stop_reason == "end_turn":
+                break
+
+            if response.stop_reason == "tool_use":
+                # Append Gary's tool call, then the tool results, and loop
+                messages.append({
+                    "role": "assistant",
+                    "content": response.content
+                })
+                tool_results = []
+                for block in response.content:
+                    if hasattr(block, "type") and block.type == "tool_use":
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": ""  # Anthropic fills web search results internally
+                        })
+                if tool_results:
+                    messages.append({
+                        "role": "user",
+                        "content": tool_results
+                    })
+                continue
+
+            break
+
+        gary_response = extract_text_from_response(response)
 
         self.conversation_history.append({
             "role": "assistant",
@@ -578,15 +626,44 @@ class GaryCore:
             "content": content
         })
 
-        response = self.client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            system=system_prompt,
-            messages=self.conversation_history
-        )
+        messages = list(self.conversation_history)
+        while True:
+            response = self.client.messages.create(
+                model=MODEL,
+                max_tokens=1024,
+                system=system_prompt,
+                tools=[WEB_SEARCH_TOOL],
+                messages=messages
+            )
 
-        gary_response = response.content[0].text
+            if response.stop_reason == "end_turn":
+                break
 
+            if response.stop_reason == "tool_use":
+                messages.append({
+                    "role": "assistant",
+                    "content": response.content
+                })
+                tool_results = []
+                for block in response.content:
+                    if hasattr(block, "type") and block.type == "tool_use":
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": ""
+                        })
+                if tool_results:
+                    messages.append({
+                        "role": "user",
+                        "content": tool_results
+                    })
+                continue
+
+            break
+
+        gary_response = extract_text_from_response(response)
+
+        # Store clean text in history, not raw content blocks
         self.conversation_history[-1] = {
             "role": "user",
             "content": caption if caption else "[file upload]"
