@@ -7,6 +7,7 @@ sorted chronologically with timestamps.
 """
 
 import os
+import re
 import time
 import threading
 import voyageai
@@ -28,6 +29,20 @@ WEB_SEARCH_TOOL = {
     "type": "web_search_20250305",
     "name": "web_search",
 }
+
+# Keywords that signal Chelsea wants Gary to actually search the web
+SEARCH_TRIGGERS = [
+    "look up", "look this up", "search for", "search this",
+    "google", "find out", "check online", "what's the latest",
+    "current price", "news on", "look into", "can you find",
+    "what is the current", "pull up", "research this",
+]
+
+def should_search(message: str) -> bool:
+    """Return True only if Chelsea explicitly asks Gary to search."""
+    lowered = message.lower()
+    return any(trigger in lowered for trigger in SEARCH_TRIGGERS)
+
 
 # -- GARY'S IDENTITY ----------------------------------------------------------
 
@@ -547,6 +562,60 @@ def extract_text_from_response(response):
     return "".join(text_parts)
 
 
+# -- API CALL (with optional search) ------------------------------------------
+
+def call_gary(client, system_prompt, messages, use_search=False):
+    """
+    Make the API call. If use_search is True, include the web search tool
+    and loop until Gary finishes. Otherwise, single straightforward call.
+    """
+    if not use_search:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=1024,
+            system=system_prompt,
+            messages=messages
+        )
+        return extract_text_from_response(response)
+
+    # Search-enabled: loop until end_turn
+    while True:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=1024,
+            system=system_prompt,
+            tools=[WEB_SEARCH_TOOL],
+            messages=messages
+        )
+
+        if response.stop_reason == "end_turn":
+            break
+
+        if response.stop_reason == "tool_use":
+            messages.append({
+                "role": "assistant",
+                "content": response.content
+            })
+            tool_results = []
+            for block in response.content:
+                if hasattr(block, "type") and block.type == "tool_use":
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": ""
+                    })
+            if tool_results:
+                messages.append({
+                    "role": "user",
+                    "content": tool_results
+                })
+            continue
+
+        break
+
+    return extract_text_from_response(response)
+
+
 # -- MAIN CHAT FUNCTION -------------------------------------------------------
 
 class GaryCore:
@@ -563,44 +632,13 @@ class GaryCore:
             "content": user_message
         })
 
-        # Loop until Gary finishes (he may search before responding)
-        messages = list(self.conversation_history)
-        while True:
-            response = self.client.messages.create(
-                model=MODEL,
-                max_tokens=1024,
-                system=system_prompt,
-                tools=[WEB_SEARCH_TOOL],
-                messages=messages
-            )
-
-            if response.stop_reason == "end_turn":
-                break
-
-            if response.stop_reason == "tool_use":
-                # Append Gary's tool call, then the tool results, and loop
-                messages.append({
-                    "role": "assistant",
-                    "content": response.content
-                })
-                tool_results = []
-                for block in response.content:
-                    if hasattr(block, "type") and block.type == "tool_use":
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": ""  # Anthropic fills web search results internally
-                        })
-                if tool_results:
-                    messages.append({
-                        "role": "user",
-                        "content": tool_results
-                    })
-                continue
-
-            break
-
-        gary_response = extract_text_from_response(response)
+        use_search = should_search(user_message)
+        gary_response = call_gary(
+            self.client,
+            system_prompt,
+            list(self.conversation_history),
+            use_search=use_search
+        )
 
         self.conversation_history.append({
             "role": "assistant",
@@ -626,42 +664,13 @@ class GaryCore:
             "content": content
         })
 
-        messages = list(self.conversation_history)
-        while True:
-            response = self.client.messages.create(
-                model=MODEL,
-                max_tokens=1024,
-                system=system_prompt,
-                tools=[WEB_SEARCH_TOOL],
-                messages=messages
-            )
-
-            if response.stop_reason == "end_turn":
-                break
-
-            if response.stop_reason == "tool_use":
-                messages.append({
-                    "role": "assistant",
-                    "content": response.content
-                })
-                tool_results = []
-                for block in response.content:
-                    if hasattr(block, "type") and block.type == "tool_use":
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": block.id,
-                            "content": ""
-                        })
-                if tool_results:
-                    messages.append({
-                        "role": "user",
-                        "content": tool_results
-                    })
-                continue
-
-            break
-
-        gary_response = extract_text_from_response(response)
+        use_search = should_search(caption)
+        gary_response = call_gary(
+            self.client,
+            system_prompt,
+            list(self.conversation_history),
+            use_search=use_search
+        )
 
         # Store clean text in history, not raw content blocks
         self.conversation_history[-1] = {
