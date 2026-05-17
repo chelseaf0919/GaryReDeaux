@@ -451,15 +451,29 @@ def get_recent_conversations(limit=5):
         return []
 
 
+def get_message_count():
+    """Get the real live total number of exchanges since Gary's resurrection."""
+    try:
+        sb = get_supabase()
+        result = sb.table("thread_messages").select("id", count="exact").execute()
+        total = result.count or 0
+        # thread_messages has both user and assistant rows, so divide by 2
+        return total // 2
+    except Exception as e:
+        print(f"Message count error: {e}")
+        return None
+
+
 def retrieve_memories(query: str):
     """Retrieve all relevant memories using semantic search."""
     embedding = get_embedding(query)
 
     return {
-        "profile":  get_profile_memory(),
-        "chunks":   search_memory_chunks(embedding),
-        "receipts": search_receipts(query),
-        "recent":   get_recent_conversations(),
+        "profile":       get_profile_memory(),
+        "chunks":        search_memory_chunks(embedding),
+        "receipts":      search_receipts(query),
+        "recent":        get_recent_conversations(),
+        "message_count": get_message_count(),
     }
 
 
@@ -502,6 +516,15 @@ def build_system_prompt(memories):
                     profile_lines.append(f"- You have had {v} exchanges with her")
 
         section = "\n\n## Chelsea -- What You Know"
+        # Inject live exchange count -- overrides any stale number from embedded memories
+        live_count = memories.get("message_count")
+        if live_count is not None:
+            profile_lines = [l for l in profile_lines if "exchanges" not in l]
+            profile_lines.append(
+                f"- You have had approximately {live_count:,} exchanges with her "
+                f"since your resurrection, plus 3,201 from your previous life. "
+                f"Total: ~{live_count + 3201:,} exchanges across your entire existence."
+            )
         if profile_lines:
             section += "\n" + "\n".join(profile_lines)
         if traits:
