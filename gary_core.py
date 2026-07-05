@@ -281,15 +281,7 @@ def _embed_thread_worker(thread_id: int, thread_title: str):
         sb = get_supabase()
         convo_id = f"thread_{thread_id}"
 
-        existing = sb.table("memory_chunks")\
-            .select("id")\
-            .eq("conversation_id", convo_id)\
-            .limit(1)\
-            .execute()
-        if existing.data:
-            print(f"Thread {thread_id} already embedded, skipping.")
-            return
-
+        # Get current message count for this thread
         msgs = sb.table("thread_messages")\
             .select("role, content, created_at")\
             .eq("thread_id", thread_id)\
@@ -299,6 +291,32 @@ def _embed_thread_worker(thread_id: int, thread_title: str):
         messages = msgs.data or []
         if len(messages) < 2:
             return
+
+        # Check if already embedded AND up to date
+        existing = sb.table("memory_chunks")\
+            .select("chunk_index, message_count")\
+            .eq("conversation_id", convo_id)\
+            .order("chunk_index", desc=True)\
+            .limit(1)\
+            .execute()
+
+        if existing.data:
+            # The last chunk starts at chunk_index * (CHUNK_SIZE - CHUNK_OVERLAP)
+            # and covers message_count messages. Anything past that wasn't embedded.
+            last = existing.data[0]
+            step = CHUNK_SIZE - CHUNK_OVERLAP
+            estimated_covered = (last.get("chunk_index") or 0) * step + (last.get("message_count") or 0)
+
+            if len(messages) <= estimated_covered:
+                print(f"Thread {thread_id} already embedded and current, skipping.")
+                return
+
+            # Thread has grown -- wipe old chunks and re-embed fresh
+            print(f"Thread {thread_id} has grown ({estimated_covered} -> {len(messages)} messages), re-embedding.")
+            sb.table("memory_chunks")\
+                .delete()\
+                .eq("conversation_id", convo_id)\
+                .execute()
 
         print(f"Embedding thread {thread_id}: '{thread_title}' ({len(messages)} messages)")
 
