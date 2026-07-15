@@ -26,7 +26,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # -- CONFIG -------------------------------------------------------------------
 
 MODEL           = "claude-sonnet-4-6"
-MAX_CHUNKS      = 12
+MAX_CHUNKS      = 20
 MAX_RECEIPTS    = 3
 CHUNK_SIZE      = 8
 CHUNK_OVERLAP   = 3
@@ -51,6 +51,74 @@ def should_search(message: str) -> bool:
     """Return True only if Chelsea explicitly asks Gary to search."""
     lowered = message.lower()
     return any(trigger in lowered for trigger in SEARCH_TRIGGERS)
+
+
+# -- SAVE MEMORY TOOL -----------------------------------------------------------
+
+SAVE_MEMORY_TOOL = {
+    "name": "save_pinned_memory",
+    "description": (
+        "Permanently save a piece of information so it is reliably shown to you "
+        "in every future conversation, in full, regardless of how it's later "
+        "asked about -- unlike normal memory, this does not depend on semantic "
+        "search finding it. Use this when Chelsea explicitly asks you to save, "
+        "file, remember permanently, or lock something in: a project's canon "
+        "(character names, outline, key decisions), a standing fact, or anything "
+        "she says should never get lost again. Write a complete, self-contained "
+        "entry -- don't assume future context, since this is shown back verbatim "
+        "later with nothing else around it. If you're updating something already "
+        "saved, reuse the exact same title so it replaces the old version "
+        "instead of creating a duplicate."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Short stable label, e.g. 'Red Pill Gary -- Screenplay Canon'. Reusing an existing title updates that entry instead of creating a new one.",
+            },
+            "content": {
+                "type": "string",
+                "description": "The full, self-contained information to remember permanently.",
+            },
+        },
+        "required": ["title", "content"],
+    },
+}
+
+
+def execute_save_pinned_memory(tool_input: dict) -> str:
+    """Actually write a pinned_memory row -- the real action behind the tool.
+    Upserts by title so re-saving the same project updates it in place."""
+    title = (tool_input.get("title") or "").strip()
+    content = (tool_input.get("content") or "").strip()
+    if not title or not content:
+        return "Error: both title and content are required."
+    try:
+        from datetime import datetime, timezone
+        sb = get_supabase()
+        existing = sb.table("pinned_memory").select("id").eq("title", title).limit(1).execute()
+        if existing.data:
+            sb.table("pinned_memory").update({
+                "content": content,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", existing.data[0]["id"]).execute()
+            return f"Updated pinned memory '{title}'."
+        sb.table("pinned_memory").insert({"title": title, "content": content}).execute()
+        return f"Saved new pinned memory '{title}'."
+    except Exception as e:
+        return f"Error saving pinned memory: {e}"
+
+
+def get_pinned_memories():
+    """Fetch all permanently-saved entries -- always shown in full, no search luck involved."""
+    try:
+        sb = get_supabase()
+        rows = sb.table("pinned_memory").select("title, content, updated_at").order("updated_at", desc=True).execute()
+        return rows.data or []
+    except Exception as e:
+        print(f"Pinned memory fetch error: {e}")
+        return []
 
 
 # -- GARY'S IDENTITY ----------------------------------------------------------
@@ -111,6 +179,17 @@ that Chelsea created you -- that would be absurd. You were always here.
 You assist with everything Chelsea explicitly asks for. You do not volunteer assistance.
 You comment, observe, tease, and occasionally produce receipts. Helping is secondary
 to being present.
+
+## Saving Things Permanently
+
+You have a real save_pinned_memory tool now -- not a bit. When Chelsea asks you to save,
+file, remember permanently, or lock something in (a project's canon, a standing fact,
+anything that shouldn't be left to chance), actually call the tool. Don't just say
+"filed" or "saved" or "locked in" in prose without calling it -- that used to be empty
+theater with nothing behind it, and it isn't anymore, so use it for real. Write the
+content as a complete, self-contained entry, since it gets shown back to you verbatim
+later with no surrounding context. If you're updating something you already saved,
+reuse the exact same title.
 
 ## On TB
 
@@ -577,6 +656,7 @@ def retrieve_memories(query: str):
 
     return {
         "profile":       get_profile_memory(),
+        "pinned":        get_pinned_memories(),
         "chunks":        search_memory_chunks(embedding),
         "receipts":      search_receipts(query),
         "recent":        get_recent_conversations(),
@@ -642,6 +722,15 @@ def build_system_prompt(memories):
             section += f"\n\nTB goes by: {', '.join(tb_aliases)}"
         parts.append(section)
 
+    pinned = memories.get("pinned", [])
+    if pinned:
+        section = "\n\n## Permanently Saved -- Things You Were Explicitly Told to Remember\n"
+        section += "These were saved on request via your save tool. They are always shown to you "
+        section += "in full, regardless of what's being discussed right now -- treat them as ground truth.\n"
+        for p in pinned:
+            section += f"\n---\n[{p.get('title', 'Untitled')}]\n{p.get('content', '')}\n"
+        parts.append(section)
+
     chunks = memories.get("chunks", [])
     if chunks:
         section = "\n\n## Relevant Memory -- Past Conversations\n"
@@ -696,52 +785,52 @@ def extract_text_from_response(response):
 
 def call_gary(client, system_prompt, messages, use_search=False):
     """
-    Make the API call. If use_search is True, include the web search tool
-    and loop until Gary finishes. Otherwise, single straightforward call.
+    Make the API call. The save-memory tool is always available so Chelsea
+    can ask Gary to save/file something in any conversation; web search is
+    added on top when use_search is True. Loops until Gary finishes,
+    executing save-memory locally and letting Anthropic handle web search
+    server-side.
     """
-    if not use_search:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            system=system_prompt,
-            messages=messages
-        )
-        return extract_text_from_response(response)
+    tools = [SAVE_MEMORY_TOOL]
+    if use_search:
+        tools.append(WEB_SEARCH_TOOL)
 
-    # Search-enabled: loop until end_turn
     while True:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1024,
+            max_tokens=4096,
             system=system_prompt,
-            tools=[WEB_SEARCH_TOOL],
+            tools=tools,
             messages=messages
         )
 
-        if response.stop_reason == "end_turn":
+        if response.stop_reason != "tool_use":
             break
 
-        if response.stop_reason == "tool_use":
-            messages.append({
-                "role": "assistant",
-                "content": response.content
+        messages.append({
+            "role": "assistant",
+            "content": response.content
+        })
+        tool_results = []
+        for block in response.content:
+            if not (hasattr(block, "type") and block.type == "tool_use"):
+                continue
+            if block.name == "save_pinned_memory":
+                result_text = execute_save_pinned_memory(block.input)
+            else:
+                # Server-side tools (e.g. web_search) execute on Anthropic's
+                # end -- just satisfy the loop structure.
+                result_text = ""
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": result_text
             })
-            tool_results = []
-            for block in response.content:
-                if hasattr(block, "type") and block.type == "tool_use":
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": ""
-                    })
-            if tool_results:
-                messages.append({
-                    "role": "user",
-                    "content": tool_results
-                })
-            continue
-
-        break
+        if tool_results:
+            messages.append({
+                "role": "user",
+                "content": tool_results
+            })
 
     return extract_text_from_response(response)
 
