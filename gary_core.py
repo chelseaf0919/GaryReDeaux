@@ -27,7 +27,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # -- CONFIG -------------------------------------------------------------------
 
 MODEL           = "claude-sonnet-4-6"
-MAX_CHUNKS      = 20
+MAX_CHUNKS      = 8
 MAX_RECEIPTS    = 3
 CHUNK_SIZE      = 8
 CHUNK_OVERLAP   = 3
@@ -112,14 +112,59 @@ def execute_save_pinned_memory(tool_input: dict) -> str:
 
 
 def get_pinned_memories():
-    """Fetch all permanently-saved entries -- always shown in full, no search luck involved."""
+    """Fetch titles only -- cheap, always shown in full in the system prompt
+    (no search luck involved). Full content is fetched on demand via the
+    get_pinned_memory tool so the token cost doesn't scale with how many
+    projects have been saved, only with how many are actually relevant
+    right now."""
     try:
         sb = get_supabase()
-        rows = sb.table("pinned_memory").select("title, content, updated_at").order("updated_at", desc=True).execute()
+        rows = sb.table("pinned_memory").select("title, updated_at").order("updated_at", desc=True).execute()
         return rows.data or []
     except Exception as e:
         print(f"Pinned memory fetch error: {e}")
         return []
+
+
+GET_PINNED_MEMORY_TOOL = {
+    "name": "get_pinned_memory",
+    "description": (
+        "Fetch the full content of something permanently saved, by exact "
+        "title. Your system prompt shows you a list of saved titles but not "
+        "their content, to keep every message cheap -- call this when the "
+        "current conversation is actually about one of those titles, to "
+        "pull up the full details before responding."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Exact title of the saved entry to fetch, as shown in your system prompt's list of permanently saved titles.",
+            },
+        },
+        "required": ["title"],
+    },
+}
+
+
+def execute_get_pinned_memory(tool_input: dict) -> str:
+    """Fetch the full content for one pinned entry -- the lazy-load half of
+    the save/file tool. Falls back to a fuzzy title match since Claude may
+    not reproduce the exact saved title string verbatim."""
+    title = (tool_input.get("title") or "").strip()
+    if not title:
+        return "Error: title is required."
+    try:
+        sb = get_supabase()
+        rows = sb.table("pinned_memory").select("title, content").eq("title", title).limit(1).execute().data
+        if not rows:
+            rows = sb.table("pinned_memory").select("title, content").ilike("title", f"%{title}%").limit(1).execute().data
+        if not rows:
+            return f"No pinned memory found matching '{title}'."
+        return rows[0]["content"]
+    except Exception as e:
+        return f"Error fetching pinned memory: {e}"
 
 
 # -- GARY'S IDENTITY ----------------------------------------------------------
@@ -191,6 +236,12 @@ theater with nothing behind it, and it isn't anymore, so use it for real. Write 
 content as a complete, self-contained entry, since it gets shown back to you verbatim
 later with no surrounding context. If you're updating something you already saved,
 reuse the exact same title.
+
+Your system prompt only shows you the TITLES of what's been saved, not the content --
+this keeps every message cheap. When the current conversation is actually about one of
+those titles, call get_pinned_memory(title) to pull up the real details before you
+answer. Do not improvise or guess at saved content from the title alone -- that's
+exactly the fabrication problem this tool exists to prevent.
 
 ## On TB
 
@@ -737,11 +788,13 @@ def build_system_prompt(memories):
 
     pinned = memories.get("pinned", [])
     if pinned:
-        section = "\n\n## Permanently Saved -- Things You Were Explicitly Told to Remember\n"
-        section += "These were saved on request via your save tool. They are always shown to you "
-        section += "in full, regardless of what's being discussed right now -- treat them as ground truth.\n"
+        section = "\n\n## Permanently Saved -- Available on Request\n"
+        section += "These titles were saved via your save tool. If the current conversation is "
+        section += "actually about one of them, call get_pinned_memory(title) with the exact title "
+        section += "below to pull up the full details before responding. Don't guess at the content "
+        section += "from the title alone.\n"
         for p in pinned:
-            section += f"\n---\n[{p.get('title', 'Untitled')}]\n{p.get('content', '')}\n"
+            section += f"- {p.get('title', 'Untitled')}\n"
         parts.append(section)
 
     chunks = memories.get("chunks", [])
@@ -804,7 +857,7 @@ def call_gary(client, system_prompt, messages, use_search=False):
     executing save-memory locally and letting Anthropic handle web search
     server-side.
     """
-    tools = [SAVE_MEMORY_TOOL]
+    tools = [SAVE_MEMORY_TOOL, GET_PINNED_MEMORY_TOOL]
     if use_search:
         tools.append(WEB_SEARCH_TOOL)
 
@@ -830,6 +883,8 @@ def call_gary(client, system_prompt, messages, use_search=False):
                 continue
             if block.name == "save_pinned_memory":
                 result_text = execute_save_pinned_memory(block.input)
+            elif block.name == "get_pinned_memory":
+                result_text = execute_get_pinned_memory(block.input)
             else:
                 # Server-side tools (e.g. web_search) execute on Anthropic's
                 # end -- just satisfy the loop structure.
