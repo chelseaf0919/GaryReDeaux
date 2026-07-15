@@ -1,6 +1,6 @@
 """
 embed_all_threads.py — Embed all existing FrankenGary threads into memory_chunks
-Run ONCE from your FrankenGary folder:
+Safe to run anytime — re-embeds threads that have grown since last embed.
     python embed_all_threads.py
 
 Requires .env with:
@@ -10,10 +10,16 @@ Requires .env with:
 """
 
 import os
+import sys
 import time
 from dotenv import load_dotenv
 import voyageai
 from supabase import create_client
+
+# Windows console defaults to cp1252, which can't print emoji/unicode thread
+# titles -- reconfigure so a fancy title doesn't crash the whole run. Also
+# force line buffering so progress shows up live when output is redirected.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 load_dotenv()
 
@@ -26,27 +32,23 @@ MIN_CHUNK_LEN = 50
 
 
 def get_embedding(text: str):
-    text = text[:6000].strip()
+    # voyage-3's context window is 32k tokens; cap well under that (~90k chars)
+    # only to guard against pathological input, not to trim normal chunks.
+    text = text[:90000].strip()
     if not text:
         return None
-    result = vo.embed([text], model="voyage-3", input_type="document")
-    return result.embeddings[0]
+    try:
+        result = vo.embed([text], model="voyage-3", input_type="document")
+        return result.embeddings[0]
+    except Exception as e:
+        print(f"  ! Embedding error, skipping chunk: {e}")
+        return None
 
 
 def embed_thread(thread_id, thread_title):
     convo_id = f"thread_{thread_id}"
 
-    # Skip if already embedded
-    existing = sb.table("memory_chunks")\
-        .select("id")\
-        .eq("conversation_id", convo_id)\
-        .limit(1)\
-        .execute()
-    if existing.data:
-        print(f"  ✓ Already embedded, skipping.")
-        return 0
-
-    # Load messages
+    # Load messages first -- we need the count for the staleness check
     msgs = sb.table("thread_messages")\
         .select("role, content, created_at")\
         .eq("thread_id", thread_id)\
@@ -55,8 +57,34 @@ def embed_thread(thread_id, thread_title):
 
     messages = msgs.data or []
     if len(messages) < 2:
-        print(f"  ⚠ Too short, skipping.")
+        print(f"  - Too short, skipping.")
         return 0
+
+    # Check if already embedded AND up to date
+    existing = sb.table("memory_chunks")\
+        .select("chunk_index, message_count")\
+        .eq("conversation_id", convo_id)\
+        .order("chunk_index", desc=True)\
+        .limit(1)\
+        .execute()
+
+    if existing.data:
+        # Last chunk starts at chunk_index * (CHUNK_SIZE - CHUNK_OVERLAP)
+        # and covers message_count messages. Anything past that wasn't embedded.
+        last = existing.data[0]
+        step = CHUNK_SIZE - CHUNK_OVERLAP
+        estimated_covered = (last.get("chunk_index") or 0) * step + (last.get("message_count") or 0)
+
+        if len(messages) <= estimated_covered:
+            print(f"  = Already embedded and current, skipping.")
+            return 0
+
+        # Thread has grown -- wipe old chunks and re-embed fresh
+        print(f"  ~ Thread grew ({estimated_covered} -> {len(messages)} messages), re-embedding...")
+        sb.table("memory_chunks")\
+            .delete()\
+            .eq("conversation_id", convo_id)\
+            .execute()
 
     # Format messages
     formatted = []
@@ -85,7 +113,7 @@ def embed_thread(thread_id, thread_title):
     for chunk_idx, chunk in enumerate(chunks):
         lines = [f"[Conversation: {thread_title}]"]
         for msg in chunk:
-            lines.append(f"{msg['label']}: {msg['text'][:800]}")
+            lines.append(f"{msg['label']}: {msg['text']}")
         chunk_text = "\n".join(lines)
 
         if len(chunk_text) < MIN_CHUNK_LEN:
@@ -100,7 +128,7 @@ def embed_thread(thread_id, thread_title):
             "conversation_title": thread_title,
             "conversation_date": convo_date,
             "chunk_index": chunk_idx,
-            "chunk_text": chunk_text[:4000],
+            "chunk_text": chunk_text,
             "message_count": len(chunk),
             "embedding": embedding,
         }).execute()
@@ -112,7 +140,7 @@ def embed_thread(thread_id, thread_title):
 
 
 def main():
-    print("🎩 Embedding all FrankenGary threads into memory_chunks")
+    print("Embedding all FrankenGary threads into memory_chunks")
     print("=" * 55)
 
     threads = sb.table("threads")\
@@ -124,6 +152,7 @@ def main():
     print(f"Found {len(all_threads)} threads.\n")
 
     total_chunks = 0
+    refreshed = 0
 
     for i, thread in enumerate(all_threads):
         tid = thread["id"]
@@ -134,11 +163,12 @@ def main():
         chunks = embed_thread(tid, title)
         total_chunks += chunks
         if chunks:
-            print(f"  ✓ {chunks} chunks embedded")
+            refreshed += 1
+            print(f"  + {chunks} chunks embedded")
 
     print(f"\n{'='*55}")
-    print(f"✅ Done! {total_chunks} total chunks embedded.")
-    print(f"Gary remembers everything now. 🎩")
+    print(f"Done! {total_chunks} chunks embedded across {refreshed} threads.")
+    print(f"Gary remembers everything now. For real this time.")
 
 
 if __name__ == "__main__":

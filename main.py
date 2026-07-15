@@ -6,6 +6,7 @@ FastAPI + HTML/JS. Mobile-first with hamburger menu + voice input.
 import os
 import io
 import base64
+from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, UploadFile, File, Form
@@ -16,13 +17,14 @@ import uvicorn
 
 load_dotenv()
 
-from gary_core import GaryCore
+from gary_core import GaryCore, start_hourly_sweep
 from gary_voice import speak
 from supabase import create_client
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 gary = GaryCore()
+start_hourly_sweep()
 
 def get_supabase():
     return create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
@@ -43,7 +45,9 @@ def load_thread_messages(thread_id):
     return res.data or []
 
 def save_message(thread_id, role, content):
-    get_supabase().table("thread_messages").insert({"thread_id": thread_id, "role": role, "content": content}).execute()
+    sb = get_supabase()
+    sb.table("thread_messages").insert({"thread_id": thread_id, "role": role, "content": content}).execute()
+    sb.table("threads").update({"updated_at": datetime.now(timezone.utc).isoformat()}).eq("id", thread_id).execute()
 
 def extract_docx_text(raw_bytes: bytes, filename: str) -> str:
     """Extract plain text from a docx file."""
@@ -95,15 +99,14 @@ async def get_threads():
 async def new_thread():
     try:
         from gary_core import embed_thread_async
-        if gary.conversation_history:
-            try:
-                sb = get_supabase()
-                recent = sb.table("threads").select("id, title").order("updated_at", desc=True).limit(1).execute()
-                if recent.data:
-                    prev = recent.data[0]
-                    embed_thread_async(prev["id"], prev["title"])
-            except Exception:
-                pass
+        try:
+            sb = get_supabase()
+            recent = sb.table("threads").select("id, title").order("updated_at", desc=True).limit(1).execute()
+            if recent.data:
+                prev = recent.data[0]
+                embed_thread_async(prev["id"], prev["title"])
+        except Exception:
+            pass
         thread_id = create_thread()
         gary.reset()
         return JSONResponse({"id": thread_id, "title": "New Chat"})
@@ -114,15 +117,14 @@ async def new_thread():
 async def get_messages(thread_id: int):
     try:
         from gary_core import embed_thread_async
-        if gary.conversation_history:
-            try:
-                sb = get_supabase()
-                recent = sb.table("threads").select("id, title").order("updated_at", desc=True).limit(1).execute()
-                if recent.data and recent.data[0]["id"] != thread_id:
-                    prev = recent.data[0]
-                    embed_thread_async(prev["id"], prev["title"])
-            except Exception:
-                pass
+        try:
+            sb = get_supabase()
+            recent = sb.table("threads").select("id, title").order("updated_at", desc=True).limit(1).execute()
+            if recent.data and recent.data[0]["id"] != thread_id:
+                prev = recent.data[0]
+                embed_thread_async(prev["id"], prev["title"])
+        except Exception:
+            pass
         messages = load_thread_messages(thread_id)
         gary.reset()
         gary.conversation_history = [{"role": m["role"], "content": m["content"]} for m in messages]

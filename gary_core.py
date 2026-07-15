@@ -8,11 +8,20 @@ sorted chronologically with timestamps.
 
 import os
 import re
+import sys
 import time
 import threading
 import voyageai
 from anthropic import Anthropic
 from supabase import create_client
+
+# Windows console defaults to cp1252, which can't print emoji/unicode thread
+# titles -- reconfigure so a fancy title doesn't crash a background print.
+# line_buffering=True so headless/redirected output (no TTY) still shows up
+# live instead of sitting in a block buffer -- otherwise the hourly sweep's
+# log lines never appear until the process exits.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 # -- CONFIG -------------------------------------------------------------------
 
@@ -252,7 +261,9 @@ def get_embedding(text: str):
 def get_document_embedding(text: str):
     """Generate a 1024-dim embedding for a document (for storage)."""
     try:
-        text = text[:6000].strip()
+        # voyage-3's context window is 32k tokens; cap well under that (~90k chars)
+        # only to guard against pathological input, not to trim normal chunks.
+        text = text[:90000].strip()
         if not text:
             return None
         vo = get_voyage()
@@ -345,7 +356,7 @@ def _embed_thread_worker(thread_id: int, thread_title: str):
         for chunk_idx, chunk in enumerate(chunks):
             lines = [f"[Conversation: {thread_title}]"]
             for msg in chunk:
-                lines.append(f"{msg['label']}: {msg['text'][:800]}")
+                lines.append(f"{msg['label']}: {msg['text']}")
             chunk_text = "\n".join(lines)
 
             if len(chunk_text) < MIN_CHUNK_LEN:
@@ -360,7 +371,7 @@ def _embed_thread_worker(thread_id: int, thread_title: str):
                 "conversation_title": thread_title,
                 "conversation_date": convo_date,
                 "chunk_index": chunk_idx,
-                "chunk_text": chunk_text[:4000],
+                "chunk_text": chunk_text,
                 "message_count": len(chunk),
                 "embedding": embedding,
             }).execute()
@@ -371,6 +382,31 @@ def _embed_thread_worker(thread_id: int, thread_title: str):
 
     except Exception as e:
         print(f"Thread embedding failed for {thread_id}: {e}")
+
+
+def sweep_stale_threads():
+    """Check every thread and catch up any that grew since their last embed.
+    Safety net for threads that never get navigated away from (long-running
+    chats) and for gaps left by a server restart."""
+    try:
+        sb = get_supabase()
+        threads = sb.table("threads").select("id, title").execute().data or []
+        for t in threads:
+            _embed_thread_worker(t["id"], t["title"] or "Untitled")
+    except Exception as e:
+        print(f"Thread sweep failed: {e}")
+
+
+def start_hourly_sweep(interval_seconds: int = 3600):
+    """Run sweep_stale_threads immediately, then again every interval_seconds,
+    in a background daemon thread."""
+    def _loop():
+        while True:
+            sweep_stale_threads()
+            time.sleep(interval_seconds)
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
 
 
 # -- MEMORY RETRIEVAL ---------------------------------------------------------
@@ -565,7 +601,7 @@ def build_system_prompt(memories):
         for chunk in chunks_sorted:
             title = chunk.get("conversation_title", "Untitled")
             date = format_date(chunk.get("conversation_date"))
-            text = chunk.get("chunk_text", "")[:1200]
+            text = chunk.get("chunk_text", "")
             date_str = f" -- {date}" if date else ""
             section += f"\n---\n[{title}{date_str}]\n{text}\n"
         parts.append(section)
