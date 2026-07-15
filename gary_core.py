@@ -26,7 +26,7 @@ if hasattr(sys.stdout, "reconfigure"):
 # -- CONFIG -------------------------------------------------------------------
 
 MODEL           = "claude-sonnet-4-6"
-MAX_CHUNKS      = 6
+MAX_CHUNKS      = 12
 MAX_RECEIPTS    = 3
 CHUNK_SIZE      = 8
 CHUNK_OVERLAP   = 3
@@ -432,8 +432,16 @@ def get_profile_memory():
         return {}
 
 
+STRONG_MATCH_THRESHOLD = 0.55
+STRONG_MATCH_EXPAND_LIMIT = 15
+STRONG_MATCH_MAX_CONVOS = 2
+
 def search_memory_chunks(embedding, limit=MAX_CHUNKS):
-    """Search memory_chunks by semantic similarity."""
+    """Search memory_chunks by semantic similarity. A single detail from a
+    long-running topic (e.g. a name mentioned once in a 40-chunk brainstorm)
+    can lose out to unrelated chunks when everything competes for the same
+    top-N slots. So if a hit is a *strong* match, pull in more of that same
+    conversation directly instead of hoping the rest wins the ranking too."""
     try:
         sb = get_supabase()
         if embedding:
@@ -442,8 +450,34 @@ def search_memory_chunks(embedding, limit=MAX_CHUNKS):
                 "match_count": limit,
                 "match_threshold": 0.3,
             }).execute()
-            if results.data:
-                return results.data
+            hits = results.data or []
+            if hits:
+                by_key = {(h["conversation_title"], h["chunk_index"]): h for h in hits}
+
+                best_per_title = {}
+                for h in hits:
+                    title = h["conversation_title"]
+                    sim = h.get("similarity") or 0
+                    if sim > best_per_title.get(title, 0):
+                        best_per_title[title] = sim
+                strong_titles = sorted(
+                    (t for t, sim in best_per_title.items() if sim >= STRONG_MATCH_THRESHOLD),
+                    key=lambda t: best_per_title[t], reverse=True
+                )[:STRONG_MATCH_MAX_CONVOS]
+
+                for title in strong_titles:
+                    extra = sb.table("memory_chunks")\
+                        .select("conversation_title, conversation_date, chunk_index, chunk_text")\
+                        .eq("conversation_title", title)\
+                        .order("chunk_index")\
+                        .limit(STRONG_MATCH_EXPAND_LIMIT)\
+                        .execute()
+                    for row in (extra.data or []):
+                        key = (row["conversation_title"], row["chunk_index"])
+                        if key not in by_key:
+                            by_key[key] = row
+
+                return list(by_key.values())
 
         rows = sb.table("memory_chunks")\
             .select("conversation_title, conversation_date, chunk_index, chunk_text")\
@@ -516,6 +550,25 @@ def get_message_count():
     except Exception as e:
         print(f"Message count error: {e}")
         return None
+
+
+def build_retrieval_query(user_message: str, conversation_history: list, max_prior_turns: int = 4) -> str:
+    """Combine the current message with recent turns so a vague or short
+    message (e.g. the opening line of a fresh thread) still produces a
+    content-rich embedding query instead of matching on almost nothing.
+    Current message goes first so it survives get_embedding's truncation
+    even if the combined text runs long -- older context gets dropped first.
+    """
+    texts = []
+    for turn in reversed(conversation_history[-max_prior_turns:]):
+        content = turn.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    texts.append(block["text"])
+    return "\n".join([user_message] + texts)
 
 
 def retrieve_memories(query: str):
@@ -701,7 +754,8 @@ class GaryCore:
         self.conversation_history = []
 
     def chat(self, user_message):
-        memories = retrieve_memories(user_message)
+        query = build_retrieval_query(user_message, self.conversation_history)
+        memories = retrieve_memories(query)
         system_prompt = build_system_prompt(memories)
 
         self.conversation_history.append({
@@ -726,7 +780,8 @@ class GaryCore:
 
     def chat_with_content(self, content_blocks: list, caption: str = ""):
         """Chat with file/image content blocks (for uploads)."""
-        query = caption if caption else "image file upload"
+        query_text = caption if caption else "image file upload"
+        query = build_retrieval_query(query_text, self.conversation_history)
         memories = retrieve_memories(query)
         system_prompt = build_system_prompt(memories)
 
