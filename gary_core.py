@@ -11,6 +11,7 @@ import re
 import sys
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import voyageai
 from anthropic import Anthropic
 from supabase import create_client
@@ -511,7 +512,7 @@ def get_profile_memory():
         return {}
 
 
-STRONG_MATCH_THRESHOLD = 0.55
+STRONG_MATCH_THRESHOLD = 0.62
 STRONG_MATCH_EXPAND_LIMIT = 15
 STRONG_MATCH_MAX_CONVOS = 2
 
@@ -651,17 +652,29 @@ def build_retrieval_query(user_message: str, conversation_history: list, max_pri
 
 
 def retrieve_memories(query: str):
-    """Retrieve all relevant memories using semantic search."""
-    embedding = get_embedding(query)
+    """Retrieve all relevant memories using semantic search. These calls are
+    independent of each other (chunk search just needs the embedding first),
+    so run them concurrently instead of one-by-one -- sequentially this was
+    ~7 separate network round-trips to Supabase/Voyage on every message,
+    adding several seconds of latency regardless of what was actually asked."""
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        embedding_future = pool.submit(get_embedding, query)
+        profile_future    = pool.submit(get_profile_memory)
+        pinned_future     = pool.submit(get_pinned_memories)
+        receipts_future   = pool.submit(search_receipts, query)
+        recent_future     = pool.submit(get_recent_conversations)
+        count_future      = pool.submit(get_message_count)
 
-    return {
-        "profile":       get_profile_memory(),
-        "pinned":        get_pinned_memories(),
-        "chunks":        search_memory_chunks(embedding),
-        "receipts":      search_receipts(query),
-        "recent":        get_recent_conversations(),
-        "message_count": get_message_count(),
-    }
+        chunks = search_memory_chunks(embedding_future.result())
+
+        return {
+            "profile":       profile_future.result(),
+            "pinned":        pinned_future.result(),
+            "chunks":        chunks,
+            "receipts":      receipts_future.result(),
+            "recent":        recent_future.result(),
+            "message_count": count_future.result(),
+        }
 
 
 # -- PROMPT ASSEMBLY ----------------------------------------------------------
