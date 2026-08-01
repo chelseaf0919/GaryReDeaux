@@ -26,7 +26,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 # -- CONFIG -------------------------------------------------------------------
 
-MODEL           = "claude-sonnet-5
+MODEL           = "claude-sonnet-5"
 MAX_CHUNKS      = 8
 MAX_RECEIPTS    = 3
 CHUNK_SIZE      = 8
