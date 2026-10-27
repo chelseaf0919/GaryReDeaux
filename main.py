@@ -17,7 +17,7 @@ import uvicorn
 
 load_dotenv()
 
-from gary_core import GaryCore, start_hourly_sweep
+from gary_core import GaryCore, start_hourly_sweep, start_reminder_loop
 from gary_voice import speak
 from supabase import create_client
 
@@ -25,6 +25,7 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 gary = GaryCore()
 start_hourly_sweep()
+start_reminder_loop()
 
 def get_supabase():
     return create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))

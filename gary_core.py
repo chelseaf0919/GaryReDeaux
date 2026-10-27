@@ -167,6 +167,193 @@ def execute_get_pinned_memory(tool_input: dict) -> str:
         return f"Error fetching pinned memory: {e}"
 
 
+# -- REMINDERS ------------------------------------------------------------------
+
+# The server runs in UTC on Railway, so everything Chelsea-facing (the clock
+# in the system prompt, the times Gary schedules) is converted to her zone.
+GARY_TIMEZONE = os.environ.get("GARY_TIMEZONE", "America/Chicago")
+
+
+def chelsea_tz():
+    from zoneinfo import ZoneInfo
+    return ZoneInfo(GARY_TIMEZONE)
+
+
+def format_local(dt) -> str:
+    """e.g. 'Tuesday, October 27, 2026 at 3:00 PM' in Chelsea's zone.
+    (strftime's %-I isn't portable to Windows, hence the replace.)"""
+    local = dt.astimezone(chelsea_tz())
+    return local.strftime("%A, %B %d, %Y at %I:%M %p").replace(" 0", " ")
+
+
+SET_REMINDER_TOOL = {
+    "name": "set_reminder",
+    "description": (
+        "Schedule a push notification to Chelsea's phone at a specific time. "
+        "Use this when she asks to be reminded of something, or agrees to your "
+        "offer to remind her. Work out the exact time from the current date and "
+        "time shown in your system prompt ('in 20 minutes', 'tomorrow morning', "
+        "'Friday at 3'). If the time she wants is genuinely ambiguous, ask "
+        "before setting it. Never tell her a reminder is set unless this tool "
+        "returned success."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "remind_at": {
+                "type": "string",
+                "description": "When to send it, as a local time in Chelsea's timezone in ISO 8601 format without an offset, e.g. '2026-10-27T15:00'.",
+            },
+            "message": {
+                "type": "string",
+                "description": "The notification text, in your voice. Keep it short and self-contained -- she'll read it on her lock screen with no other context, so say what the reminder is actually about.",
+            },
+        },
+        "required": ["remind_at", "message"],
+    },
+}
+
+
+def execute_set_reminder(tool_input: dict) -> str:
+    from datetime import datetime, timezone, timedelta
+    message = (tool_input.get("message") or "").strip()
+    raw = (tool_input.get("remind_at") or "").strip()
+    if not message or not raw:
+        return "Error: both remind_at and message are required."
+    try:
+        when = datetime.fromisoformat(raw)
+    except ValueError:
+        return f"Error: couldn't parse remind_at '{raw}'. Use a format like 2026-10-27T15:00."
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=chelsea_tz())
+    when_utc = when.astimezone(timezone.utc)
+    if when_utc < datetime.now(timezone.utc) - timedelta(minutes=1):
+        return f"Error: {format_local(when_utc)} is in the past. Check the current time in your system prompt and try again."
+    try:
+        row = get_supabase().table("reminders").insert({
+            "message": message,
+            "remind_at": when_utc.isoformat(),
+        }).execute().data[0]
+        return f"Reminder #{row['id']} set for {format_local(when_utc)}."
+    except Exception as e:
+        return f"Error saving reminder: {e}"
+
+
+LIST_REMINDERS_TOOL = {
+    "name": "list_reminders",
+    "description": (
+        "List Chelsea's upcoming reminders that haven't gone off yet, with "
+        "their ids and times. Use when she asks what reminders she has, or "
+        "before cancelling one so you have the right id."
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
+
+def execute_list_reminders(tool_input: dict) -> str:
+    from datetime import datetime
+    try:
+        rows = get_supabase().table("reminders")\
+            .select("id, message, remind_at")\
+            .is_("sent_at", "null")\
+            .order("remind_at")\
+            .execute().data or []
+    except Exception as e:
+        return f"Error fetching reminders: {e}"
+    if not rows:
+        return "No upcoming reminders."
+    return "\n".join(
+        f"#{r['id']} -- {format_local(datetime.fromisoformat(r['remind_at']))}: {r['message']}"
+        for r in rows
+    )
+
+
+CANCEL_REMINDER_TOOL = {
+    "name": "cancel_reminder",
+    "description": "Cancel an upcoming reminder by its id (from list_reminders).",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer", "description": "The reminder's id."},
+        },
+        "required": ["id"],
+    },
+}
+
+
+def execute_cancel_reminder(tool_input: dict) -> str:
+    reminder_id = tool_input.get("id")
+    try:
+        deleted = get_supabase().table("reminders")\
+            .delete()\
+            .eq("id", reminder_id)\
+            .is_("sent_at", "null")\
+            .execute().data
+    except Exception as e:
+        return f"Error cancelling reminder: {e}"
+    if not deleted:
+        return f"No upcoming reminder #{reminder_id} found (it may have already gone off)."
+    return f"Cancelled reminder #{reminder_id}."
+
+
+def send_push(message: str, title: str = "Gary") -> bool:
+    """Send a notification to Chelsea's phone via ntfy (https://ntfy.sh).
+    The topic name is effectively the password -- anyone who knows it can
+    read and send to it -- so it lives in NTFY_TOPIC, not in code."""
+    import urllib.request
+    topic = os.environ.get("NTFY_TOPIC")
+    if not topic:
+        print("Push skipped: NTFY_TOPIC is not set.")
+        return False
+    req = urllib.request.Request(
+        f"https://ntfy.sh/{topic}",
+        data=message.encode("utf-8"),
+        headers={"Title": title, "Tags": "alarm_clock"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status == 200
+    except Exception as e:
+        print(f"Push failed: {e}")
+        return False
+
+
+def send_due_reminders():
+    """Send every reminder whose time has come and mark it sent. Anything
+    that came due while the server was down goes out on the next check."""
+    from datetime import datetime, timezone
+    try:
+        sb = get_supabase()
+        now = datetime.now(timezone.utc).isoformat()
+        due = sb.table("reminders")\
+            .select("id, message")\
+            .is_("sent_at", "null")\
+            .lte("remind_at", now)\
+            .order("remind_at")\
+            .execute().data or []
+        for r in due:
+            if send_push(r["message"]):
+                sb.table("reminders").update({
+                    "sent_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", r["id"]).execute()
+                print(f"Sent reminder #{r['id']}")
+    except Exception as e:
+        print(f"Reminder check failed: {e}")
+
+
+def start_reminder_loop(interval_seconds: int = 30):
+    """Check for due reminders every interval_seconds in a background daemon
+    thread, same pattern as start_hourly_sweep."""
+    def _loop():
+        while True:
+            send_due_reminders()
+            time.sleep(interval_seconds)
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+
+
 # -- GARY'S IDENTITY ----------------------------------------------------------
 
 GARY_IDENTITY = """
@@ -744,7 +931,13 @@ def format_date(iso_string):
 
 
 def build_system_prompt(memories):
+    from datetime import datetime, timezone
     parts = [GARY_IDENTITY]
+
+    parts.append(
+        f"\n\n## Right Now\nIt is currently {format_local(datetime.now(timezone.utc))} "
+        f"in Chelsea's timezone ({GARY_TIMEZONE})."
+    )
 
     profile = memories.get("profile", {})
     if profile:
@@ -858,7 +1051,8 @@ def call_gary(client, system_prompt, messages, use_search=False):
     executing save-memory locally and letting Anthropic handle web search
     server-side.
     """
-    tools = [SAVE_MEMORY_TOOL, GET_PINNED_MEMORY_TOOL]
+    tools = [SAVE_MEMORY_TOOL, GET_PINNED_MEMORY_TOOL,
+             SET_REMINDER_TOOL, LIST_REMINDERS_TOOL, CANCEL_REMINDER_TOOL]
     if use_search:
         tools.append(WEB_SEARCH_TOOL)
 
@@ -886,6 +1080,12 @@ def call_gary(client, system_prompt, messages, use_search=False):
                 result_text = execute_save_pinned_memory(block.input)
             elif block.name == "get_pinned_memory":
                 result_text = execute_get_pinned_memory(block.input)
+            elif block.name == "set_reminder":
+                result_text = execute_set_reminder(block.input)
+            elif block.name == "list_reminders":
+                result_text = execute_list_reminders(block.input)
+            elif block.name == "cancel_reminder":
+                result_text = execute_cancel_reminder(block.input)
             else:
                 # Server-side tools (e.g. web_search) execute on Anthropic's
                 # end -- just satisfy the loop structure.

@@ -8,3 +8,4 @@ python-multipart
 voyageai
 python-docx
 reportlab
+tzdata
