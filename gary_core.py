@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 import voyageai
 from anthropic import Anthropic
 from supabase import create_client
+from gary_google import GOOGLE_TOOLS, GOOGLE_EXECUTORS
 
 # Windows console defaults to cp1252, which can't print emoji/unicode thread
 # titles -- reconfigure so a fancy title doesn't crash a background print.
@@ -1136,7 +1137,8 @@ def call_gary(client, system_prompt, messages, use_search=False):
     server-side.
     """
     tools = [SAVE_MEMORY_TOOL, GET_PINNED_MEMORY_TOOL,
-             SET_REMINDER_TOOL, LIST_REMINDERS_TOOL, CANCEL_REMINDER_TOOL]
+             SET_REMINDER_TOOL, LIST_REMINDERS_TOOL, CANCEL_REMINDER_TOOL,
+             *GOOGLE_TOOLS]
     if use_search:
         tools.append(WEB_SEARCH_TOOL)
 
@@ -1170,6 +1172,8 @@ def call_gary(client, system_prompt, messages, use_search=False):
                 result_text = execute_list_reminders(block.input)
             elif block.name == "cancel_reminder":
                 result_text = execute_cancel_reminder(block.input)
+            elif block.name in GOOGLE_EXECUTORS:
+                result_text = GOOGLE_EXECUTORS[block.name](block.input)
             else:
                 # Server-side tools (e.g. web_search) execute on Anthropic's
                 # end -- just satisfy the loop structure.
