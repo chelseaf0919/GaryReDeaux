@@ -44,7 +44,7 @@ def session_token():
 
 @app.middleware("http")
 async def require_login(request: Request, call_next):
-    if not GARY_PASSWORD or request.url.path == "/login":
+    if not GARY_PASSWORD or request.url.path in ("/login", "/privacy"):
         return await call_next(request)
     if hmac.compare_digest(request.cookies.get(SESSION_COOKIE, ""), session_token()):
         return await call_next(request)
@@ -89,6 +89,42 @@ async def login(request: Request, password: str = Form(default="")):
     resp.set_cookie(SESSION_COOKIE, session_token(), max_age=60 * 60 * 24 * 365,
                     httponly=True, secure=https, samesite="lax")
     return resp
+
+# Public (no login) because Google's OAuth "Publish app" step requires a
+# privacy policy link for the calendar/email connection.
+PRIVACY_PAGE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gary Privacy Policy</title>
+<style>
+  body { margin: 0; background: #0a0a0f; color: #e8e6f0; font-family: monospace; line-height: 1.6; }
+  main { max-width: 640px; margin: 0 auto; padding: 2rem 16px; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1rem; margin-top: 1.5rem; color: #7b6ef6; }
+</style></head>
+<body><main>
+  <h1>Gary: Privacy Policy</h1>
+  <p>Gary is a personal assistant app built for and used by one person, its owner.
+  It is not offered to the public.</p>
+  <h2>What Gary accesses</h2>
+  <p>With the owner's permission, Gary reads the owner's Google Calendar and Gmail,
+  creates and edits calendar events, and creates email drafts. Gary does not send email.</p>
+  <h2>How the data is used</h2>
+  <p>Calendar and email data is used only to answer the owner's own requests, such as
+  scheduling, reminders, and summarizing messages. It is processed by the AI model
+  that powers Gary and is not sold, shared with third parties, or used for advertising.</p>
+  <h2>Storage</h2>
+  <p>Gary does not keep a copy of the owner's inbox or calendar. Conversations with
+  Gary are stored in the owner's private database.</p>
+  <h2>Revoking access</h2>
+  <p>Access can be removed at any time at
+  <a href="https://myaccount.google.com/permissions" style="color:#4ecdc4">myaccount.google.com/permissions</a>.</p>
+  <h2>Contact</h2>
+  <p>chelseae0919@gmail.com</p>
+</main></body></html>"""
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_page():
+    return HTMLResponse(PRIVACY_PAGE)
 
 def get_supabase():
     return create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
