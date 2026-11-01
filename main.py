@@ -20,7 +20,7 @@ import uvicorn
 load_dotenv()
 
 from gary_core import (GaryCore, start_hourly_sweep, start_reminder_loop,
-                       retitle_thread_async, RETITLE_AT_MESSAGE_COUNTS)
+                       retitle_thread_async, RETITLE_AT_MESSAGE_COUNTS, search_threads)
 from gary_voice import speak
 from supabase import create_client
 
@@ -139,50 +139,6 @@ def update_thread_title(thread_id, title):
 def get_all_threads():
     res = get_supabase().table("threads").select("id, title, updated_at, pinned, folder_id").order("updated_at", desc=True).execute()
     return res.data or []
-
-def make_snippet(content: str, words: list, before: int = 60, after: int = 120) -> str:
-    """A short excerpt around the first search word, for the results list."""
-    lowered = content.lower()
-    pos = min((lowered.find(w.lower()) for w in words if lowered.find(w.lower()) >= 0), default=0)
-    start, end = max(0, pos - before), min(len(content), pos + after)
-    snippet = " ".join(content[start:end].split())
-    return ("..." if start > 0 else "") + snippet + ("..." if end < len(content) else "")
-
-def search_threads(q: str, limit: int = 40):
-    """Plain keyword search over every chat title and message. Every word has
-    to appear (in any order) in the same message, or in the title. Title
-    matches rank first, then chats with the most recent matching message."""
-    words = q.split()
-    if not words:
-        return []
-    # LIKE treats % and _ as wildcards; escape them so they match literally.
-    patterns = ["%" + w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%" for w in words]
-    sb = get_supabase()
-
-    title_query = sb.table("threads").select("id")
-    for p in patterns:
-        title_query = title_query.ilike("title", p)
-    title_ids = [t["id"] for t in (title_query.execute().data or [])]
-
-    msg_query = sb.table("thread_messages").select("thread_id, content")
-    for p in patterns:
-        msg_query = msg_query.ilike("content", p)
-    msgs = msg_query.order("id", desc=True).limit(500).execute().data or []
-
-    hits = {}
-    for m in msgs:
-        hit = hits.setdefault(m["thread_id"], {"snippet": make_snippet(m["content"], words), "match_count": 0})
-        hit["match_count"] += 1
-
-    ordered_ids = title_ids + [tid for tid in hits if tid not in title_ids]
-    ordered_ids = ordered_ids[:limit]
-    if not ordered_ids:
-        return []
-    threads = {t["id"]: t for t in sb.table("threads").select("id, title, updated_at").in_("id", ordered_ids).execute().data or []}
-    return [
-        {**threads[tid], **hits.get(tid, {"snippet": "", "match_count": 0})}
-        for tid in ordered_ids if tid in threads
-    ]
 
 def load_thread_messages(thread_id):
     res = get_supabase().table("thread_messages").select("role, content, created_at").eq("thread_id", thread_id).order("id").execute()

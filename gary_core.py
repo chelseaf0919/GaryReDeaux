@@ -355,6 +355,235 @@ def start_reminder_loop(interval_seconds: int = 30):
     t.start()
 
 
+# -- PAST CHAT SEARCH ---------------------------------------------------------
+# The same keyword search as the sidebar, plus tools so Gary can run it
+# himself instead of relying only on what retrieve_memories happened to pull.
+
+def make_snippet(content: str, words: list, before: int = 60, after: int = 120) -> str:
+    """A short excerpt around the first search word, for the results list."""
+    lowered = content.lower()
+    pos = min((lowered.find(w.lower()) for w in words if lowered.find(w.lower()) >= 0), default=0)
+    start, end = max(0, pos - before), min(len(content), pos + after)
+    snippet = " ".join(content[start:end].split())
+    return ("..." if start > 0 else "") + snippet + ("..." if end < len(content) else "")
+
+
+def like_patterns(words: list) -> list:
+    # LIKE treats % and _ as wildcards; escape them so they match literally.
+    return ["%" + w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%" for w in words]
+
+
+def search_threads(q: str, limit: int = 40):
+    """Plain keyword search over every chat title and message. Every word has
+    to appear (in any order) in the same message, or in the title. Title
+    matches rank first, then chats with the most recent matching message."""
+    words = q.split()
+    if not words:
+        return []
+    patterns = like_patterns(words)
+    sb = get_supabase()
+
+    title_query = sb.table("threads").select("id")
+    for p in patterns:
+        title_query = title_query.ilike("title", p)
+    title_ids = [t["id"] for t in (title_query.execute().data or [])]
+
+    msg_query = sb.table("thread_messages").select("thread_id, content")
+    for p in patterns:
+        msg_query = msg_query.ilike("content", p)
+    msgs = msg_query.order("id", desc=True).limit(500).execute().data or []
+
+    hits = {}
+    for m in msgs:
+        hit = hits.setdefault(m["thread_id"], {"snippet": make_snippet(m["content"], words), "match_count": 0})
+        hit["match_count"] += 1
+
+    ordered_ids = title_ids + [tid for tid in hits if tid not in title_ids]
+    ordered_ids = ordered_ids[:limit]
+    if not ordered_ids:
+        return []
+    threads = {t["id"]: t for t in sb.table("threads").select("id, title, updated_at").in_("id", ordered_ids).execute().data or []}
+    return [
+        {**threads[tid], **hits.get(tid, {"snippet": "", "match_count": 0})}
+        for tid in ordered_ids if tid in threads
+    ]
+
+
+def short_local(iso_string: str) -> str:
+    """'Sat Oct 31, 9:14 PM' in Chelsea's zone."""
+    from datetime import datetime
+    local = datetime.fromisoformat(iso_string).astimezone(chelsea_tz())
+    return local.strftime("%a %b %d, %I:%M %p").replace(" 0", " ")
+
+
+SEARCH_PAST_CHATS_TOOL = {
+    "name": "search_past_chats",
+    "description": (
+        "Search every past chat you've had with Chelsea, by keyword, by date, "
+        "or both. The 'Relevant Memory' and 'Recent Conversations' in your "
+        "system prompt are only an automatic guess at what's relevant -- when "
+        "Chelsea refers to something you discussed before ('what we talked "
+        "about last night', 'the lockbox thing', 'what did I say about "
+        "Richard?') and it isn't in front of you, search for it instead of "
+        "guessing or saying you can't remember. Keywords are plain words, and "
+        "every word must appear in the same message, so use one to three "
+        "distinctive words and try other wordings if nothing comes up. For "
+        "'last night' or 'on Tuesday', pass dates (worked out from the "
+        "current time in your system prompt) with or without keywords. "
+        "Returns chat ids, titles, times, and snippets; then use "
+        "read_past_chat to read one. Snippets are fragments: read the chat "
+        "before relying on the details, and when several chats match, check "
+        "the most recent ones too -- a later chat may have changed an earlier "
+        "decision."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Keywords to look for. Optional if dates are given."},
+            "start_date": {"type": "string", "description": "Only messages on or after this day (Chelsea's local date), e.g. '2026-10-31'."},
+            "end_date": {"type": "string", "description": "Only messages on or before this day (Chelsea's local date). Defaults to start_date when only start_date is given."},
+        },
+    },
+}
+
+
+def local_day_bounds(start_date: str, end_date: str):
+    """Local 'YYYY-MM-DD' days -> [start, end) as UTC ISO strings."""
+    from datetime import datetime, timedelta, timezone
+    tz = chelsea_tz()
+    start = datetime.fromisoformat(start_date).replace(tzinfo=tz)
+    end = datetime.fromisoformat(end_date).replace(tzinfo=tz) + timedelta(days=1)
+    return start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()
+
+
+def execute_search_past_chats(tool_input: dict) -> str:
+    query = (tool_input.get("query") or "").strip()
+    start_date = (tool_input.get("start_date") or "").strip()
+    end_date = (tool_input.get("end_date") or "").strip() or start_date
+    if not start_date and end_date:
+        start_date = "2000-01-01"
+    if not query and not start_date:
+        return "Error: give a query, a start_date, or both."
+    words = query.split()
+    try:
+        if not start_date:
+            results = search_threads(query, limit=15)
+            if not results:
+                return f"No chats mention all of: {query}. Try fewer or different words."
+            return "\n".join(
+                f"[chat {r['id']}] \"{r['title']}\" -- last active {short_local(r['updated_at'])}"
+                + (f" | {r['match_count']} matching message{'s' if r['match_count'] != 1 else ''}" if r["match_count"] else " | title match")
+                + (f"\n    {r['snippet']}" if r["snippet"] else "")
+                for r in results
+            )
+
+        since, until = local_day_bounds(start_date, end_date)
+        sb = get_supabase()
+        msg_query = sb.table("thread_messages").select("thread_id, role, content, created_at")\
+            .gte("created_at", since).lt("created_at", until)
+        for p in like_patterns(words):
+            msg_query = msg_query.ilike("content", p)
+        msgs = msg_query.order("id").limit(2000).execute().data or []
+        if not msgs:
+            span = start_date if start_date == end_date else f"{start_date} to {end_date}"
+            return f"No messages{' mentioning ' + query if query else ''} from {span}."
+
+        hits = {}
+        for m in msgs:  # oldest first, so the snippet comes from the first message that day
+            hit = hits.setdefault(m["thread_id"], {"first": m["created_at"], "count": 0, "snippet": None})
+            hit["last"] = m["created_at"]
+            hit["count"] += 1
+            if hit["snippet"] is None and (words or m["role"] == "user"):
+                hit["snippet"] = make_snippet(m["content"], words) if words else " ".join(m["content"][:180].split())
+        titles = {t["id"]: t["title"] for t in sb.table("threads").select("id, title")
+                  .in_("id", list(hits)).execute().data or []}
+    except Exception as e:
+        return f"Error searching chats: {e}"
+
+    ordered = sorted(hits.items(), key=lambda kv: kv[1]["last"], reverse=True)[:20]
+    noun = "matching message" if words else "message"
+    return "\n".join(
+        f"[chat {tid}] \"{titles.get(tid, 'Untitled')}\" -- {short_local(h['first'])} to {short_local(h['last'])}"
+        f" | {h['count']} {noun}{'s' if h['count'] != 1 else ''}"
+        + (f"\n    {h['snippet']}" if h["snippet"] else "")
+        for tid, h in ordered
+    )
+
+
+READ_PAST_CHAT_TOOL = {
+    "name": "read_past_chat",
+    "description": (
+        "Read a past chat with Chelsea by its id (from search_past_chats). "
+        "With a query, returns just the messages containing those words plus "
+        "a few messages around each -- use that for long chats. Without one, "
+        "returns the whole chat, or the most recent part if it's long."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "chat_id": {"type": "integer", "description": "The chat's id."},
+            "query": {"type": "string", "description": "Optional words to jump to; every word must appear in the same message."},
+        },
+        "required": ["chat_id"],
+    },
+}
+
+READ_CHAT_TAIL = 60          # messages shown when a chat is read without a query
+READ_CHAT_CONTEXT = 3        # messages either side of each match
+READ_CHAT_MAX_MATCHES = 12
+READ_CHAT_MSG_CHARS = 2500
+READ_CHAT_TOTAL_CHARS = 40000
+
+
+def execute_read_past_chat(tool_input: dict) -> str:
+    chat_id = tool_input.get("chat_id")
+    words = [w.lower() for w in (tool_input.get("query") or "").split()]
+    try:
+        sb = get_supabase()
+        thread = sb.table("threads").select("title").eq("id", chat_id).execute().data
+        if not thread:
+            return f"No chat with id {chat_id}."
+        msgs = sb.table("thread_messages").select("role, content, created_at")\
+            .eq("thread_id", chat_id).order("id").execute().data or []
+    except Exception as e:
+        return f"Error reading chat: {e}"
+    if not msgs:
+        return f"Chat {chat_id} (\"{thread[0]['title']}\") has no messages."
+
+    header = (f"Chat {chat_id}: \"{thread[0]['title']}\" -- {len(msgs)} messages, "
+              f"{short_local(msgs[0]['created_at'])} to {short_local(msgs[-1]['created_at'])}")
+    if words:
+        matches = [i for i, m in enumerate(msgs) if all(w in m["content"].lower() for w in words)]
+        if not matches:
+            return header + f"\nNo message in this chat contains all of: {' '.join(words)}."
+        shown = sorted({j for i in matches[:READ_CHAT_MAX_MATCHES]
+                        for j in range(max(0, i - READ_CHAT_CONTEXT), min(len(msgs), i + READ_CHAT_CONTEXT + 1))})
+        header += f"\n{len(matches)} matching message{'s' if len(matches) != 1 else ''}"
+        if len(matches) > READ_CHAT_MAX_MATCHES:
+            header += f" (showing the first {READ_CHAT_MAX_MATCHES}; use more specific words to narrow it)"
+    else:
+        shown = list(range(max(0, len(msgs) - READ_CHAT_TAIL), len(msgs)))
+        if len(msgs) > READ_CHAT_TAIL:
+            header += f"\nShowing the last {READ_CHAT_TAIL}; pass a query to find earlier parts."
+
+    lines, total, prev = [header], 0, None
+    for i in shown:
+        if prev is not None and i != prev + 1:
+            lines.append("    [...]")
+        m = msgs[i]
+        content = m["content"]
+        if len(content) > READ_CHAT_MSG_CHARS:
+            content = content[:READ_CHAT_MSG_CHARS] + " [...message cut short]"
+        line = f"[{short_local(m['created_at'])}] {'Chelsea' if m['role'] == 'user' else 'You'}: {content}"
+        total += len(line)
+        if total > READ_CHAT_TOTAL_CHARS:
+            lines.append("[...stopping here, that's a lot of text -- use a query to jump to a specific part.]")
+            break
+        lines.append(line)
+        prev = i
+    return "\n".join(lines)
+
+
 # -- GARY'S IDENTITY ----------------------------------------------------------
 
 GARY_IDENTITY = """
@@ -1010,6 +1239,8 @@ def format_date(iso_string):
     try:
         from datetime import datetime, timezone
         d = datetime.fromisoformat(iso_string.replace("Z", "+00:00"))
+        if d.tzinfo:
+            d = d.astimezone(chelsea_tz())  # a 10pm chat is stored as the next day in UTC
         return d.strftime("%B %d, %Y")
     except Exception:
         return iso_string[:10]
@@ -1022,6 +1253,13 @@ def build_system_prompt(memories):
     parts.append(
         f"\n\n## Right Now\nIt is currently {format_local(datetime.now(timezone.utc))} "
         f"in Chelsea's timezone ({GARY_TIMEZONE})."
+    )
+    parts.append(
+        "\n\n## Your Chat History\nYou can search and read every past chat with "
+        "Chelsea yourself, with search_past_chats and read_past_chat. The memory "
+        "sections below are only an automatic guess at what's relevant. When she "
+        "brings up an earlier conversation they don't cover, look it up rather "
+        "than guessing or telling her you can't remember."
     )
 
     profile = memories.get("profile", {})
@@ -1108,7 +1346,7 @@ def build_system_prompt(memories):
             section += f'\n### {thread["title"]}\n'
             for msg in thread["messages"]:
                 role_label = "Chelsea" if msg["role"] == "user" else "You"
-                ts = f" ({msg.get('created_at','')[:10]})" if msg.get('created_at') else ""
+                ts = f" ({short_local(msg['created_at'])})" if msg.get('created_at') else ""
                 section += f'{role_label}{ts}: "{msg["content"][:300]}"\n'
         parts.append(section)
 
@@ -1137,6 +1375,7 @@ def call_gary(client, system_prompt, messages, use_search=False):
     server-side.
     """
     tools = [SAVE_MEMORY_TOOL, GET_PINNED_MEMORY_TOOL,
+             SEARCH_PAST_CHATS_TOOL, READ_PAST_CHAT_TOOL,
              SET_REMINDER_TOOL, LIST_REMINDERS_TOOL, CANCEL_REMINDER_TOOL,
              *GOOGLE_TOOLS]
     if use_search:
@@ -1166,6 +1405,10 @@ def call_gary(client, system_prompt, messages, use_search=False):
                 result_text = execute_save_pinned_memory(block.input)
             elif block.name == "get_pinned_memory":
                 result_text = execute_get_pinned_memory(block.input)
+            elif block.name == "search_past_chats":
+                result_text = execute_search_past_chats(block.input)
+            elif block.name == "read_past_chat":
+                result_text = execute_read_past_chat(block.input)
             elif block.name == "set_reminder":
                 result_text = execute_set_reminder(block.input)
             elif block.name == "list_reminders":
