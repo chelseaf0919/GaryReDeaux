@@ -412,7 +412,7 @@ def brief_prompt(today, schedule: str, used_words: list) -> str:
         "2. Some funny commentary or an anecdote, in your voice. Draw on what you know about her "
         "life and what's coming up today, but don't invent plans she hasn't told you about.\n"
         "3. A super rare word of the day: the word, its part of speech, what it means, and a line "
-        "using it. She ranks in the world top ten at rare-word games, so aim for legendary tier: "
+        "using it. She regularly places in the top 20 worldwide on Outlier's daily puzzle, so aim for legendary tier: "
         "a real dictionary word (Collins Scrabble Words / OED) that almost nobody has ever played. "
         "Her own recent finds set the bar: XYST, BRITSCHKA, LYNCHETS, HEGUMEN, DIGAMY, "
         "DEHYPNOTIZE. Anything that shows up on 'beautiful rare words' lists or word-of-the-day "
