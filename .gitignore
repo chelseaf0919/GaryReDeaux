@@ -1,6 +1,13 @@
 # Environment
 .env
 
+# Original chat titles from before auto-titling (personal)
+thread_titles_backup.json
+
+# Google OAuth client file (secret -- used once by google_auth_setup.py)
+client_secret*.json
+google_credentials.json
+
 # Gary's memory (rebuild locally with ingest.py)
 gary_memory.db
 gary_chroma/

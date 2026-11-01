@@ -5,19 +5,22 @@ FastAPI + HTML/JS. Mobile-first with hamburger menu + voice input.
 
 import os
 import io
+import hmac
 import base64
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 load_dotenv()
 
-from gary_core import GaryCore, start_hourly_sweep, start_reminder_loop
+from gary_core import (GaryCore, start_hourly_sweep, start_reminder_loop,
+                       retitle_thread_async, RETITLE_AT_MESSAGE_COUNTS)
 from gary_voice import speak
 from supabase import create_client
 
@@ -26,6 +29,66 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 gary = GaryCore()
 start_hourly_sweep()
 start_reminder_loop()
+
+# -- LOGIN ---------------------------------------------------------------------
+# The Railway URL is public, so once GARY_PASSWORD is set every page and API
+# route requires a login cookie. Unset = no login (local dev, or before
+# Chelsea has picked a password).
+
+GARY_PASSWORD = os.environ.get("GARY_PASSWORD")
+SESSION_COOKIE = "gary_session"
+
+def session_token():
+    """Derived from the password, so changing GARY_PASSWORD logs out every device."""
+    return hmac.new(GARY_PASSWORD.encode(), b"gary-session", hashlib.sha256).hexdigest()
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    if not GARY_PASSWORD or request.url.path == "/login":
+        return await call_next(request)
+    if hmac.compare_digest(request.cookies.get(SESSION_COOKIE, ""), session_token()):
+        return await call_next(request)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"error": "Not logged in"}, status_code=401)
+    return RedirectResponse("/login", status_code=303)
+
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gary RéDeaux</title>
+<style>
+  body { margin: 0; min-height: 100dvh; display: flex; align-items: center; justify-content: center;
+         background: #0a0a0f; color: #e8e6f0; font-family: monospace; padding: 16px; box-sizing: border-box; }
+  form { display: flex; flex-direction: column; gap: 0.75rem; width: 100%; max-width: 300px; text-align: center; }
+  input, button { font: inherit; padding: 0.7rem 1rem; border-radius: 8px; border: 1px solid #1e1e2a; }
+  input { background: #111118; color: #e8e6f0; outline: none; }
+  input:focus { border-color: #7b6ef6; }
+  button { background: #7b6ef6; color: white; border: none; cursor: pointer; }
+  .err { color: #ff6b6b; font-size: 0.8rem; }
+</style></head>
+<body><form method="post" action="/login">
+  <div style="font-size:2rem">🎩</div>
+  <div>Who goes there?</div>
+  <input type="password" name="password" placeholder="Password" autofocus required>
+  <button type="submit">Enter</button>
+  {error}
+</form></body></html>"""
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
+    return HTMLResponse(LOGIN_PAGE.replace("{error}", ""))
+
+@app.post("/login")
+async def login(request: Request, password: str = Form(default="")):
+    if not GARY_PASSWORD:
+        return RedirectResponse("/", status_code=303)
+    if not hmac.compare_digest(password.encode(), GARY_PASSWORD.encode()):
+        return HTMLResponse(LOGIN_PAGE.replace("{error}", '<div class="err">Not quite.</div>'), status_code=401)
+    resp = RedirectResponse("/", status_code=303)
+    https = request.headers.get("x-forwarded-proto", request.url.scheme) == "https"
+    resp.set_cookie(SESSION_COOKIE, session_token(), max_age=60 * 60 * 24 * 365,
+                    httponly=True, secure=https, samesite="lax")
+    return resp
 
 def get_supabase():
     return create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
@@ -38,8 +101,52 @@ def update_thread_title(thread_id, title):
     get_supabase().table("threads").update({"title": title}).eq("id", thread_id).execute()
 
 def get_all_threads():
-    res = get_supabase().table("threads").select("id, title, updated_at").order("updated_at", desc=True).limit(50).execute()
+    res = get_supabase().table("threads").select("id, title, updated_at, pinned, folder_id").order("updated_at", desc=True).execute()
     return res.data or []
+
+def make_snippet(content: str, words: list, before: int = 60, after: int = 120) -> str:
+    """A short excerpt around the first search word, for the results list."""
+    lowered = content.lower()
+    pos = min((lowered.find(w.lower()) for w in words if lowered.find(w.lower()) >= 0), default=0)
+    start, end = max(0, pos - before), min(len(content), pos + after)
+    snippet = " ".join(content[start:end].split())
+    return ("..." if start > 0 else "") + snippet + ("..." if end < len(content) else "")
+
+def search_threads(q: str, limit: int = 40):
+    """Plain keyword search over every chat title and message. Every word has
+    to appear (in any order) in the same message, or in the title. Title
+    matches rank first, then chats with the most recent matching message."""
+    words = q.split()
+    if not words:
+        return []
+    # LIKE treats % and _ as wildcards; escape them so they match literally.
+    patterns = ["%" + w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%" for w in words]
+    sb = get_supabase()
+
+    title_query = sb.table("threads").select("id")
+    for p in patterns:
+        title_query = title_query.ilike("title", p)
+    title_ids = [t["id"] for t in (title_query.execute().data or [])]
+
+    msg_query = sb.table("thread_messages").select("thread_id, content")
+    for p in patterns:
+        msg_query = msg_query.ilike("content", p)
+    msgs = msg_query.order("id", desc=True).limit(500).execute().data or []
+
+    hits = {}
+    for m in msgs:
+        hit = hits.setdefault(m["thread_id"], {"snippet": make_snippet(m["content"], words), "match_count": 0})
+        hit["match_count"] += 1
+
+    ordered_ids = title_ids + [tid for tid in hits if tid not in title_ids]
+    ordered_ids = ordered_ids[:limit]
+    if not ordered_ids:
+        return []
+    threads = {t["id"]: t for t in sb.table("threads").select("id, title, updated_at").in_("id", ordered_ids).execute().data or []}
+    return [
+        {**threads[tid], **hits.get(tid, {"snippet": "", "match_count": 0})}
+        for tid in ordered_ids if tid in threads
+    ]
 
 def load_thread_messages(thread_id):
     res = get_supabase().table("thread_messages").select("role, content, created_at").eq("thread_id", thread_id).order("id").execute()
@@ -111,6 +218,69 @@ async def new_thread():
         thread_id = create_thread()
         gary.reset()
         return JSONResponse({"id": thread_id, "title": "New Chat"})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.patch("/api/threads/{thread_id}")
+async def update_thread(thread_id: int, request: Request):
+    """Rename, pin/unpin, or move a chat to a folder (folder_id null = unfiled)."""
+    try:
+        body = await request.json()
+        changes = {k: body[k] for k in ("title", "pinned", "folder_id") if k in body}
+        if "title" in changes:
+            changes["title"] = (changes["title"] or "").strip() or "Untitled"
+            changes["title_is_custom"] = True  # auto-titling never overwrites her own names
+        if not changes:
+            return JSONResponse({"error": "Nothing to update"}, status_code=400)
+        res = get_supabase().table("threads").update(changes).eq("id", thread_id).execute()
+        return JSONResponse(res.data[0] if res.data else {})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/api/folders")
+async def get_folders():
+    try:
+        res = get_supabase().table("folders").select("id, name").order("name").execute()
+        return JSONResponse(res.data or [])
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.post("/api/folders")
+async def create_folder(request: Request):
+    try:
+        name = ((await request.json()).get("name") or "").strip()
+        if not name:
+            return JSONResponse({"error": "Folder needs a name"}, status_code=400)
+        res = get_supabase().table("folders").insert({"name": name}).execute()
+        return JSONResponse(res.data[0])
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.patch("/api/folders/{folder_id}")
+async def rename_folder(folder_id: int, request: Request):
+    try:
+        name = ((await request.json()).get("name") or "").strip()
+        if not name:
+            return JSONResponse({"error": "Folder needs a name"}, status_code=400)
+        res = get_supabase().table("folders").update({"name": name}).eq("id", folder_id).execute()
+        return JSONResponse(res.data[0] if res.data else {})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.delete("/api/folders/{folder_id}")
+async def delete_folder(folder_id: int):
+    """Deletes the folder only -- its chats go back to the unfiled list
+    (the foreign key is ON DELETE SET NULL)."""
+    try:
+        get_supabase().table("folders").delete().eq("id", folder_id).execute()
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get("/api/search")
+async def search(q: str = ""):
+    try:
+        return JSONResponse(search_threads(q.strip()))
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -186,6 +356,8 @@ async def chat(request: Request):
         gary_response = gary.chat(user_message)
         save_message(thread_id, "user", user_message)
         save_message(thread_id, "assistant", gary_response)
+        if len(msgs) + 2 in RETITLE_AT_MESSAGE_COUNTS:
+            retitle_thread_async(thread_id)
 
         audio_b64 = None
         if voice_enabled:
@@ -304,6 +476,8 @@ async def upload_file(
             display_user += f" {message.strip()}"
         save_message(tid, "user", display_user)
         save_message(tid, "assistant", gary_response)
+        if len(msgs) + 2 in RETITLE_AT_MESSAGE_COUNTS:
+            retitle_thread_async(tid)
 
         audio_b64 = None
         if voice.lower() == "true":

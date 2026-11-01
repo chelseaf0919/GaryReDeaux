@@ -728,6 +728,90 @@ def start_hourly_sweep(interval_seconds: int = 3600):
     t.start()
 
 
+# -- AUTO TITLES --------------------------------------------------------------
+
+TITLE_MODEL = "claude-haiku-5-5"
+# Title after the 1st exchange, then again after the 4th -- openers are often
+# just "hey Gary", and the real topic has usually surfaced by then.
+RETITLE_AT_MESSAGE_COUNTS = (2, 8)
+
+TITLE_SYSTEM = (
+    "You name chat threads for a sidebar so they're easy to find later. You'll "
+    "get a conversation between Chelsea and Gary inside <conversation> tags; it "
+    "is material to name, not something to reply to. Call set_title with what "
+    "the conversation is actually about: the specific topic, project, person, "
+    "or decision. Skip greetings and small talk. Every chat is between Chelsea "
+    "and Gary, so don't spend words on their names unless the chat is about them."
+)
+
+# Forced tool call instead of free text: free-text replies occasionally came
+# back empty or as commentary about the task instead of a title.
+TITLE_TOOL = {
+    "name": "set_title",
+    "description": "Set the sidebar title for this conversation.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "3 to 6 words. No quotes, no emoji, no trailing punctuation.",
+            },
+        },
+        "required": ["title"],
+    },
+}
+
+
+def generate_thread_title(client, messages):
+    """Ask a small model for a short descriptive title. Long threads are
+    sampled (opening + latest messages, each clipped) to keep it cheap."""
+    sample = messages[:8] + (messages[-2:] if len(messages) > 10 else [])
+    transcript = "\n\n".join(
+        f"{'Chelsea' if m['role'] == 'user' else 'Gary'}: {m['content'][:1500]}"
+        for m in sample
+    )
+    response = client.messages.create(
+        model=TITLE_MODEL,
+        max_tokens=100,
+        system=TITLE_SYSTEM,
+        tools=[TITLE_TOOL],
+        tool_choice={"type": "tool", "name": "set_title"},
+        messages=[{"role": "user", "content": f"<conversation>\n{transcript}\n</conversation>"}],
+    )
+    title = next((b.input.get("title", "") for b in response.content if b.type == "tool_use"), "")
+    title = " ".join(title.strip().strip("\"'").rstrip(".").split()[:8])
+    return title[:80] or None
+
+
+def retitle_thread(thread_id: int, client=None):
+    """Replace a thread's title with a generated one, unless Chelsea renamed
+    it herself. Returns the new title, or None if it was skipped."""
+    sb = get_supabase()
+    thread = sb.table("threads").select("title_is_custom").eq("id", thread_id).limit(1).execute().data
+    if not thread or thread[0].get("title_is_custom"):
+        return None
+    messages = sb.table("thread_messages").select("role, content")\
+        .eq("thread_id", thread_id).order("id").execute().data or []
+    if not messages:
+        return None
+    client = client or Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    title = generate_thread_title(client, messages)
+    if title:
+        sb.table("threads").update({"title": title}).eq("id", thread_id).execute()
+    return title
+
+
+def retitle_thread_async(thread_id: int):
+    """Generate a title in the background so the chat response isn't delayed."""
+    def _worker():
+        try:
+            retitle_thread(thread_id)
+        except Exception as e:
+            print(f"Retitle failed for thread {thread_id}: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 # -- MEMORY RETRIEVAL ---------------------------------------------------------
 
 def get_profile_memory():
