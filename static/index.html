@@ -783,6 +783,13 @@
   }
 
   loadThreads();
+
+  // Notification links (the morning brief) open a specific chat: /?thread=123
+  const linkedThread = Number(new URLSearchParams(location.search).get('thread'));
+  if (linkedThread) {
+    history.replaceState(null, '', '/');
+    loadThread(linkedThread);
+  }
 </script>
 </body>
 </html>

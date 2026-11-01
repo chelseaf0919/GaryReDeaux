@@ -144,6 +144,15 @@ def load_thread_messages(thread_id):
     res = get_supabase().table("thread_messages").select("role, content, created_at").eq("thread_id", thread_id).order("id").execute()
     return res.data or []
 
+def history_for_gary(messages):
+    """Thread messages -> Gary's conversation history. Morning-brief chats open
+    with Gary's message, and the API wants the conversation to start with a
+    user turn, so give those a stand-in one."""
+    history = [{"role": m["role"], "content": m["content"]} for m in messages]
+    if history and history[0]["role"] == "assistant":
+        history.insert(0, {"role": "user", "content": "[Gary's automatic morning brief]"})
+    return history
+
 def save_message(thread_id, role, content):
     sb = get_supabase()
     sb.table("thread_messages").insert({"thread_id": thread_id, "role": role, "content": content}).execute()
@@ -290,7 +299,7 @@ async def get_messages(thread_id: int):
             pass
         messages = load_thread_messages(thread_id)
         gary.reset()
-        gary.conversation_history = [{"role": m["role"], "content": m["content"]} for m in messages]
+        gary.conversation_history = history_for_gary(messages)
         return JSONResponse(messages)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -335,9 +344,7 @@ async def chat(request: Request):
             gary.reset()
         else:
             prior_msgs = load_thread_messages(thread_id)
-            gary.conversation_history = [
-                {"role": m["role"], "content": m["content"]} for m in prior_msgs
-            ]
+            gary.conversation_history = history_for_gary(prior_msgs)
 
         msgs = load_thread_messages(thread_id)
         if len(msgs) == 0:
@@ -449,9 +456,7 @@ async def upload_file(
             gary.reset()
         else:
             prior_msgs = load_thread_messages(tid)
-            gary.conversation_history = [
-                {"role": m["role"], "content": m["content"]} for m in prior_msgs
-            ]
+            gary.conversation_history = history_for_gary(prior_msgs)
 
         msgs = load_thread_messages(tid)
         if len(msgs) == 0:

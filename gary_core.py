@@ -297,19 +297,24 @@ def execute_cancel_reminder(tool_input: dict) -> str:
     return f"Cancelled reminder #{reminder_id}."
 
 
-def send_push(message: str, title: str = "Gary") -> bool:
+def send_push(message: str, title: str = "Gary", tags: str = "alarm_clock", click: str = None) -> bool:
     """Send a notification to Chelsea's phone via ntfy (https://ntfy.sh).
     The topic name is effectively the password -- anyone who knows it can
-    read and send to it -- so it lives in NTFY_TOPIC, not in code."""
+    read and send to it -- so it lives in NTFY_TOPIC, not in code.
+    click is a URL to open when she taps the notification. Headers must be
+    plain ASCII, so emoji go in tags (ntfy turns tag names into emoji)."""
     import urllib.request
     topic = os.environ.get("NTFY_TOPIC")
     if not topic:
         print("Push skipped: NTFY_TOPIC is not set.")
         return False
+    headers = {"Title": title, "Tags": tags}
+    if click:
+        headers["Click"] = click
     req = urllib.request.Request(
         f"https://ntfy.sh/{topic}",
         data=message.encode("utf-8"),
-        headers={"Title": title, "Tags": "alarm_clock"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -345,14 +350,158 @@ def send_due_reminders():
 
 def start_reminder_loop(interval_seconds: int = 30):
     """Check for due reminders every interval_seconds in a background daemon
-    thread, same pattern as start_hourly_sweep."""
+    thread, same pattern as start_hourly_sweep. Also kicks off the daily
+    morning brief once it's due."""
     def _loop():
         while True:
             send_due_reminders()
+            maybe_start_daily_brief()
             time.sleep(interval_seconds)
 
     t = threading.Thread(target=_loop, daemon=True)
     t.start()
+
+
+# -- DAILY MORNING BRIEF ------------------------------------------------------
+# Every morning Gary writes Chelsea a brief (today's schedule, commentary, a
+# rare word, a demand for her riddle of the day), saves it as a new chat so she
+# can reply there, and pushes it to her phone; tapping it opens that chat.
+# The chats double as the record: one created today means today's brief went
+# out, and each title ends with its word so words never repeat.
+
+DAILY_BRIEF_TIME = os.environ.get("GARY_DAILY_BRIEF_TIME", "08:00")  # Chelsea's local time
+DAILY_BRIEF_LATEST_HOUR = 12      # if the server was down at brief time, still send until noon
+BRIEF_TITLE_PREFIX = "Morning Brief · "
+BRIEF_FOLDER = "Morning Briefs"
+BRIEF_RETRY_SECONDS = 600
+
+_brief_lock = threading.Lock()    # held while a brief is being written
+_brief_done_for = None            # local date of the last brief sent (or found already sent)
+_brief_retry_after = 0.0
+
+BRIEF_TOOL = {
+    "name": "send_morning_brief",
+    "description": "Send Chelsea today's morning brief.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "word": {"type": "string", "description": "The rare word of the day -- just the word itself."},
+            "message": {"type": "string", "description": "The full brief, exactly as she'll read it on her phone."},
+        },
+        "required": ["word", "message"],
+    },
+}
+
+
+def public_url():
+    """Gary's site, for links in notifications. Railway sets RAILWAY_PUBLIC_DOMAIN."""
+    if os.environ.get("GARY_PUBLIC_URL"):
+        return os.environ["GARY_PUBLIC_URL"].rstrip("/")
+    domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN")
+    return f"https://{domain}" if domain else None
+
+
+def brief_prompt(today, schedule: str, used_words: list) -> str:
+    avoid = f" Don't reuse any of these past words: {', '.join(used_words)}." if used_words else ""
+    return (
+        "[This is your automatic morning job, not a message from Chelsea. She isn't here yet: "
+        "what you write goes straight to her phone as a push notification, and tapping it opens "
+        "a new chat with you where she can reply.]\n\n"
+        f"Write her morning brief for {today:%A, %B} {today.day}. Include:\n"
+        "1. Her schedule for today from the calendar below, with times. If it's empty, say so.\n"
+        "2. Some funny commentary or an anecdote, in your voice. Draw on what you know about her "
+        "life and what's coming up today, but don't invent plans she hasn't told you about.\n"
+        "3. A super rare word of the day: the word, its part of speech, what it means, and a line "
+        "using it. She ranks in the world top ten at rare-word games, so it has to be genuinely "
+        f"obscure, not a word-of-the-day-calendar regular.{avoid}\n"
+        "4. Tell her just how badly you need to hear her riddle of the day. She'll reply with it in "
+        "this chat.\n\n"
+        "Keep it to about 1,200 characters so it reads well on a phone. Plain text with line "
+        "breaks: no markdown symbols, since the notification shows them raw.\n\n"
+        f"Today's calendar:\n{schedule}"
+    )
+
+
+def compose_daily_brief(today, used_words: list):
+    """Have Gary write today's brief. Returns (word, message)."""
+    from gary_google import GOOGLE_ENABLED, execute_list_calendar_events
+    schedule = (execute_list_calendar_events({"start": today.isoformat(), "end": today.isoformat()})
+                if GOOGLE_ENABLED else "(Her calendar isn't connected.)")
+    memories = retrieve_memories("Chelsea's day ahead: plans, meetings, riddles, rare words")
+    response = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY")).messages.create(
+        model=MODEL,
+        max_tokens=2000,
+        system=build_system_prompt(memories),
+        tools=[BRIEF_TOOL],
+        tool_choice={"type": "tool", "name": "send_morning_brief"},
+        messages=[{"role": "user", "content": brief_prompt(today, schedule, used_words)}],
+    )
+    brief = next(b.input for b in response.content if b.type == "tool_use")
+    return brief["word"].strip().strip("\"'.").lower(), brief["message"].strip()
+
+
+def brief_folder_id(sb):
+    rows = sb.table("folders").select("id").eq("name", BRIEF_FOLDER).limit(1).execute().data
+    if rows:
+        return rows[0]["id"]
+    return sb.table("folders").insert({"name": BRIEF_FOLDER}).execute().data[0]["id"]
+
+
+def maybe_start_daily_brief():
+    """Called every reminder-loop tick; starts today's brief in the background
+    once it's due. Cheap until then -- no network calls."""
+    from datetime import datetime
+    now = datetime.now(chelsea_tz())
+    hour, minute = map(int, DAILY_BRIEF_TIME.split(":"))
+    if _brief_done_for == now.date() or time.time() < _brief_retry_after:
+        return
+    if (now.hour, now.minute) < (hour, minute) or now.hour >= max(DAILY_BRIEF_LATEST_HOUR, hour + 1):
+        return
+    if not _brief_lock.acquire(blocking=False):
+        return  # already being written
+    threading.Thread(target=_daily_brief_worker, args=(now,), daemon=True).start()
+
+
+def _daily_brief_worker(now):
+    global _brief_done_for, _brief_retry_after
+    from datetime import timezone
+    try:
+        today = now.date()
+        sb = get_supabase()
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+        briefs = sb.table("threads").select("title, created_at")\
+            .like("title", BRIEF_TITLE_PREFIX + "%").execute().data or []
+        if any(b["created_at"] >= midnight.isoformat() for b in briefs):
+            _brief_done_for = today  # already went out (e.g. before a restart)
+            return
+
+        used_words = [b["title"].rsplit(" · ", 1)[-1] for b in briefs if b["title"].count(" · ") >= 2]
+        word, message = compose_daily_brief(today, used_words)
+
+        thread = sb.table("threads").insert({
+            "title": f"{BRIEF_TITLE_PREFIX}{today:%b} {today.day} · {word}",
+            "title_is_custom": True,  # keep auto-titling from renaming it
+            "folder_id": brief_folder_id(sb),
+        }).execute().data[0]
+        sb.table("thread_messages").insert({
+            "thread_id": thread["id"], "role": "assistant", "content": message,
+        }).execute()
+
+        base = public_url()
+        if send_push(message, title="Morning Brief", tags="sunrise",
+                     click=f"{base}/?thread={thread['id']}" if base else None):
+            _brief_done_for = today
+            print(f"Sent morning brief (chat {thread['id']}, word: {word})")
+        else:
+            # Undo so the retry starts clean instead of seeing today's chat and stopping.
+            sb.table("thread_messages").delete().eq("thread_id", thread["id"]).execute()
+            sb.table("threads").delete().eq("id", thread["id"]).execute()
+            _brief_retry_after = time.time() + BRIEF_RETRY_SECONDS
+    except Exception as e:
+        print(f"Morning brief failed: {e}")
+        _brief_retry_after = time.time() + BRIEF_RETRY_SECONDS
+    finally:
+        _brief_lock.release()
 
 
 # -- PAST CHAT SEARCH ---------------------------------------------------------
