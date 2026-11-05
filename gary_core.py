@@ -31,6 +31,9 @@ if hasattr(sys.stdout, "reconfigure"):
 # -- CONFIG -------------------------------------------------------------------
 
 MODEL           = "claude-sonnet-5"
+# Thinking counts against this, and hard requests can spend all of it thinking,
+# which leaves no reply at all. It was 4096, which did exactly that.
+MAX_TOKENS      = 16000
 MAX_CHUNKS      = 8
 MAX_RECEIPTS    = 3
 CHUNK_SIZE      = 8
@@ -1555,7 +1558,7 @@ def call_gary(client, system_prompt, messages, use_search=False):
     while True:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=4096,
+            max_tokens=MAX_TOKENS,
             system=system_prompt,
             tools=tools,
             messages=messages
@@ -1605,7 +1608,15 @@ def call_gary(client, system_prompt, messages, use_search=False):
                 "content": tool_results
             })
 
-    return extract_text_from_response(response)
+    text = extract_text_from_response(response)
+    if response.stop_reason == "max_tokens":
+        print(f"Gary hit the {MAX_TOKENS} token limit ({len(text)} chars of reply)")
+        cut_off = "[Gary ran out of room here. Ask him to continue, or to take it in smaller pieces.]"
+        return f"{text}\n\n{cut_off}" if text else cut_off
+    if not text:
+        print(f"Gary's reply came back empty: stop_reason={response.stop_reason}")
+        return "[Gary's reply came back empty. Try sending that again.]"
+    return text
 
 
 # -- MAIN CHAT FUNCTION -------------------------------------------------------

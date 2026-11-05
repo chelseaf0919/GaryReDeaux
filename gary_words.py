@@ -2,11 +2,12 @@
 gary_words.py - Gary's rarity check for words he suggests in Outlier.
 
 Outlier tiers come from how many players have found a word, which nobody outside
-the game can see, so this is a filter rather than a tier predictor. Of 42 words
-Chelsea has reported tiers for, all 14 epic or rare ones scored above zero, once
-inflections borrow their root's score (KVETCHED -> KVETCH). 26 of the 28 legendary
-or outlier ones scored zero; the exceptions are CANDYTUFT(S), legendary at 1.01,
-so a low score means probably epic, not definitely. The cutoffs are rough.
+the game can see, so this only rules words out. Tested on 143 words Chelsea
+reported, none used to set the cutoffs: at 1.5 and above (inflections borrow their
+root's score, KVETCHED -> KVETCH), 12 of 14 were epic or lower. Below that the
+score says little: 79-80% were legendary or outlier, near the list's 74% overall,
+and 22 of the 37 epic or rare words scored zero. Her reported tiers are the real
+evidence, so they're shown alongside and get better as she adds more.
 
 Zero also covers words that don't exist, since wordfreq has no data on either.
 So a word also has to be recognized: in data/word_list.txt.gz (ENABLE, Wordnik,
@@ -30,8 +31,19 @@ INFLECTIONS = [("iest", ["y"]), ("ier", ["y"]), ("ies", ["y"]), ("ied", ["y"]),
                ("est", ["", "e"]), ("er", ["", "e"]), ("es", ["", "e"]),
                ("ed", ["", "e"]), ("ing", ["", "e"]), ("s", [""])]
 
+TIERS = "outlier|legendary|leg|epic|rare|uncommon|common"
 # word (outlier), word(leg), word (leg/encore), word (outlier, but an encore)
-TIER_REPORT = re.compile(r"\b([A-Za-z]{3,})\s*\((outlier|legendary|leg|epic|rare|uncommon|common)\s*[),/]", re.I)
+# or a list, one per line or comma-separated: Word- outlier, Word-leg, Word: epic
+TIER_REPORT = re.compile(
+    rf"\b([A-Za-z]{{3,}})\s*\(({TIERS})\s*[),/]"
+    rf"|(?:^|[,;])[ \t]*([A-Za-z]{{3,}})[ \t]*[-–—:][ \t]*({TIERS})[ \t]*(?=$|[,;])",
+    re.I | re.M,
+)
+REPORT_SEARCH = ",".join(
+    f'content.ilike."%{mark}{tier}%"'
+    for tier in TIERS.split("|") if tier != "legendary"  # "leg" already covers it
+    for mark in ("(", "-", "- ", ": ")
+)
 
 
 def frequency(word: str) -> float:
@@ -82,16 +94,15 @@ def reported_tiers() -> dict:
     from gary_core import get_supabase
     try:
         rows = get_supabase().table("thread_messages").select("content")\
-            .eq("role", "user").ilike("content", "%(%")\
-            .or_("content.ilike.%outlier%,content.ilike.%leg%,content.ilike.%epic%,"
-                 "content.ilike.%rare%,content.ilike.%common%")\
+            .eq("role", "user").or_(REPORT_SEARCH)\
             .order("id", desc=True).limit(1000).execute().data or []
     except Exception as e:
         print(f"Couldn't load reported tiers: {e}")
         return {}
     tiers = {}
     for row in rows:  # newest first, so the latest report wins
-        for word, tier in TIER_REPORT.findall(row["content"]):
+        for match in reversed(TIER_REPORT.findall(row["content"])):
+            word, tier = match[0] or match[2], match[1] or match[3]
             tier = "legendary" if tier.lower() == "leg" else tier.lower()
             tiers.setdefault(word.lower(), tier)
     return tiers
@@ -116,9 +127,10 @@ CHECK_RARITY_TOOL = {
         "sense of what's rare has been unreliable. Returns, rarest first, each "
         "word's frequency score, a label, a verdict, and the tier Chelsea last "
         "reported for it, if any. A reported tier beats everything else, though "
-        "tiers shift daily. Follow the verdict, and never claim a tier yourself: "
-        "this can't tell legendary from outlier or promise either. An unverified "
-        "word may not be real, so say so if you offer it at all."
+        "tiers shift daily. Without one, this can only rule words out: 'not ruled "
+        "out' is no promise, and plenty of those turn out epic, so never claim a "
+        "tier yourself. An unverified word may not be real, so say so if you offer "
+        "it at all."
     ),
     "input_schema": {
         "type": "object",
@@ -137,11 +149,9 @@ def verdict(score: float, recognized: bool) -> str:
     if score >= 3:
         return "too common, skip it"
     if score >= 1.5:
-        return "epic at best"
-    if score > 0:
-        return "probably epic, could be legendary"
-    if recognized:
-        return "could be legendary or outlier"
+        return "probably epic at best"
+    if score > 0 or recognized:
+        return "not ruled out: could be epic, legendary, or outlier"
     return "unverified, may not be a real word"
 
 
