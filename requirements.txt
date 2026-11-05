@@ -11,3 +11,4 @@ reportlab
 tzdata
 google-api-python-client
 google-auth
+wordfreq

@@ -16,6 +16,7 @@ import voyageai
 from anthropic import Anthropic
 from supabase import create_client
 from gary_google import GOOGLE_TOOLS, GOOGLE_EXECUTORS
+from gary_words import CHECK_RARITY_TOOL, execute_check_word_rarity, rarity_score, in_word_list
 
 # Windows console defaults to cp1252, which can't print emoji/unicode thread
 # titles -- reconfigure so a fancy title doesn't crash a background print.
@@ -374,6 +375,7 @@ DAILY_BRIEF_LATEST_HOUR = 12      # if the server was down at brief time, still 
 BRIEF_TITLE_PREFIX = "Morning Brief · "
 BRIEF_FOLDER = "Morning Briefs"
 BRIEF_RETRY_SECONDS = 600
+BRIEF_WORD_ATTEMPTS = 3
 
 _brief_lock = threading.Lock()    # held while a brief is being written
 _brief_done_for = None            # local date of the last brief sent (or found already sent)
@@ -433,16 +435,25 @@ def compose_daily_brief(today, used_words: list):
     schedule = (execute_list_calendar_events({"start": today.isoformat(), "end": today.isoformat()})
                 if GOOGLE_ENABLED else "(Her calendar isn't connected.)")
     memories = retrieve_memories("Chelsea's day ahead: plans, meetings, riddles, rare words")
-    response = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY")).messages.create(
-        model=MODEL,
-        max_tokens=2000,
-        system=build_system_prompt(memories),
-        tools=[BRIEF_TOOL],
-        tool_choice={"type": "tool", "name": "send_morning_brief"},
-        messages=[{"role": "user", "content": brief_prompt(today, schedule, used_words)}],
-    )
-    brief = next(b.input for b in response.content if b.type == "tool_use")
-    return brief["word"].strip().strip("\"'.").lower(), brief["message"].strip()
+    client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    rejected = []
+    for _ in range(BRIEF_WORD_ATTEMPTS):
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=2000,
+            system=build_system_prompt(memories),
+            tools=[BRIEF_TOOL],
+            tool_choice={"type": "tool", "name": "send_morning_brief"},
+            messages=[{"role": "user", "content": brief_prompt(today, schedule, used_words + rejected)}],
+        )
+        brief = next(b.input for b in response.content if b.type == "tool_use")
+        word = brief["word"].strip().strip("\"'.").lower()
+        # Too common, or possibly invented: have him pick again. If he never
+        # lands one, the last try still goes out rather than losing the brief.
+        if rarity_score(word)[0] == 0 and in_word_list([word]):
+            break
+        rejected.append(word)
+    return word, brief["message"].strip()
 
 
 def brief_folder_id(sb):
@@ -1529,7 +1540,7 @@ def call_gary(client, system_prompt, messages, use_search=False):
     server-side.
     """
     tools = [SAVE_MEMORY_TOOL, GET_PINNED_MEMORY_TOOL,
-             SEARCH_PAST_CHATS_TOOL, READ_PAST_CHAT_TOOL,
+             SEARCH_PAST_CHATS_TOOL, READ_PAST_CHAT_TOOL, CHECK_RARITY_TOOL,
              SET_REMINDER_TOOL, LIST_REMINDERS_TOOL, CANCEL_REMINDER_TOOL,
              *GOOGLE_TOOLS]
     if use_search:
@@ -1563,6 +1574,8 @@ def call_gary(client, system_prompt, messages, use_search=False):
                 result_text = execute_search_past_chats(block.input)
             elif block.name == "read_past_chat":
                 result_text = execute_read_past_chat(block.input)
+            elif block.name == "check_word_rarity":
+                result_text = execute_check_word_rarity(block.input)
             elif block.name == "set_reminder":
                 result_text = execute_set_reminder(block.input)
             elif block.name == "list_reminders":
