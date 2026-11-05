@@ -20,9 +20,9 @@ import uvicorn
 load_dotenv()
 
 from gary_core import (GaryCore, start_hourly_sweep, start_reminder_loop,
-                       retitle_thread_async, RETITLE_AT_MESSAGE_COUNTS, search_threads)
+                       retitle_thread_async, RETITLE_AT_MESSAGE_COUNTS, search_threads,
+                       get_supabase)
 from gary_voice import speak
-from supabase import create_client
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -125,9 +125,6 @@ PRIVACY_PAGE = """<!DOCTYPE html>
 @app.get("/privacy", response_class=HTMLResponse)
 async def privacy_page():
     return HTMLResponse(PRIVACY_PAGE)
-
-def get_supabase():
-    return create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
 
 def create_thread(title="New Chat"):
     res = get_supabase().table("threads").insert({"title": title}).execute()
